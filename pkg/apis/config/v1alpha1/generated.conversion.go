@@ -9,7 +9,6 @@ import (
 	unsafe "unsafe"
 
 	config "github.com/gardener/gardener-extension-envoy-gateway/pkg/apis/config"
-	v1 "k8s.io/api/core/v1"
 	conversion "k8s.io/apimachinery/pkg/conversion"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 )
@@ -65,8 +64,7 @@ func RegisterConversions(s *runtime.Scheme) error {
 }
 
 func autoConvert_v1alpha1_ControlPlaneConfig_To_config_ControlPlaneConfig(in *ControlPlaneConfig, out *config.ControlPlaneConfig, s conversion.Scope) error {
-	out.Replicas = (*int32)(unsafe.Pointer(in.Replicas))
-	out.LogLevel = config.LogLevel(in.LogLevel)
+	*out = *(*config.ControlPlaneConfig)(unsafe.Pointer(in))
 	return nil
 }
 
@@ -76,8 +74,7 @@ func Convert_v1alpha1_ControlPlaneConfig_To_config_ControlPlaneConfig(in *Contro
 }
 
 func autoConvert_config_ControlPlaneConfig_To_v1alpha1_ControlPlaneConfig(in *config.ControlPlaneConfig, out *ControlPlaneConfig, s conversion.Scope) error {
-	out.Replicas = (*int32)(unsafe.Pointer(in.Replicas))
-	out.LogLevel = LogLevel(in.LogLevel)
+	*out = *(*ControlPlaneConfig)(unsafe.Pointer(in))
 	return nil
 }
 
@@ -87,8 +84,7 @@ func Convert_config_ControlPlaneConfig_To_v1alpha1_ControlPlaneConfig(in *config
 }
 
 func autoConvert_v1alpha1_DataPlaneConfig_To_config_DataPlaneConfig(in *DataPlaneConfig, out *config.DataPlaneConfig, s conversion.Scope) error {
-	out.Replicas = (*int32)(unsafe.Pointer(in.Replicas))
-	out.LogLevel = config.LogLevel(in.LogLevel)
+	*out = *(*config.DataPlaneConfig)(unsafe.Pointer(in))
 	return nil
 }
 
@@ -98,8 +94,7 @@ func Convert_v1alpha1_DataPlaneConfig_To_config_DataPlaneConfig(in *DataPlaneCon
 }
 
 func autoConvert_config_DataPlaneConfig_To_v1alpha1_DataPlaneConfig(in *config.DataPlaneConfig, out *DataPlaneConfig, s conversion.Scope) error {
-	out.Replicas = (*int32)(unsafe.Pointer(in.Replicas))
-	out.LogLevel = LogLevel(in.LogLevel)
+	*out = *(*DataPlaneConfig)(unsafe.Pointer(in))
 	return nil
 }
 
@@ -137,8 +132,7 @@ func Convert_config_EnvoyGatewayConfig_To_v1alpha1_EnvoyGatewayConfig(in *config
 }
 
 func autoConvert_v1alpha1_EnvoyProxyDefaults_To_config_EnvoyProxyDefaults(in *EnvoyProxyDefaults, out *config.EnvoyProxyDefaults, s conversion.Scope) error {
-	out.Resources = (*v1.ResourceRequirements)(unsafe.Pointer(in.Resources))
-	out.AccessLogging = in.AccessLogging
+	*out = *(*config.EnvoyProxyDefaults)(unsafe.Pointer(in))
 	return nil
 }
 
@@ -148,8 +142,7 @@ func Convert_v1alpha1_EnvoyProxyDefaults_To_config_EnvoyProxyDefaults(in *EnvoyP
 }
 
 func autoConvert_config_EnvoyProxyDefaults_To_v1alpha1_EnvoyProxyDefaults(in *config.EnvoyProxyDefaults, out *EnvoyProxyDefaults, s conversion.Scope) error {
-	out.Resources = (*v1.ResourceRequirements)(unsafe.Pointer(in.Resources))
-	out.AccessLogging = in.AccessLogging
+	*out = *(*EnvoyProxyDefaults)(unsafe.Pointer(in))
 	return nil
 }
 
