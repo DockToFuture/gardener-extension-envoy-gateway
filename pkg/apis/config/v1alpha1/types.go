@@ -96,4 +96,17 @@ type EnvoyGatewayConfig struct {
 	// EnvoyProxyDefaults is an optional, opinionated template applied to every
 	// Gateway via the gateway.envoyproxy.io/v1alpha1.EnvoyProxy reference.
 	EnvoyProxyDefaults *EnvoyProxyDefaults `json:"envoyProxyDefaults,omitempty"`
+
+	// ManageDataPlaneNetworkPolicies, when true, makes the extension reconcile a
+	// data-plane ingress NetworkPolicy into each shoot namespace that holds a
+	// Gateway (allowing external traffic to the Envoy proxies). The extension
+	// writes these policies directly to the shoot on every reconcile through an
+	// uncached client and owns their full lifecycle: a policy is created when a
+	// namespace gains its first Gateway and removed once the namespace no longer
+	// holds one (or the feature is disabled). They cannot ride the shoot
+	// ManagedResource because gardener-resource-manager caches only a fixed set of
+	// namespaces and cannot reach arbitrary Gateway namespaces. Defaults to false.
+	// Only enable this on shoots whose network plugin enforces NetworkPolicies and
+	// where the default-deny posture would otherwise block Gateway traffic.
+	ManageDataPlaneNetworkPolicies *bool `json:"manageDataPlaneNetworkPolicies,omitempty"`
 }

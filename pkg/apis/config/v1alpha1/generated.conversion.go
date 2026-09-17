@@ -109,6 +109,7 @@ func autoConvert_v1alpha1_EnvoyGatewayConfig_To_config_EnvoyGatewayConfig(in *En
 	out.Channel = config.Channel(in.Channel)
 	out.ManageCRDs = (*bool)(unsafe.Pointer(in.ManageCRDs))
 	out.EnvoyProxyDefaults = (*config.EnvoyProxyDefaults)(unsafe.Pointer(in.EnvoyProxyDefaults))
+	out.ManageDataPlaneNetworkPolicies = (*bool)(unsafe.Pointer(in.ManageDataPlaneNetworkPolicies))
 	return nil
 }
 
@@ -123,6 +124,7 @@ func autoConvert_config_EnvoyGatewayConfig_To_v1alpha1_EnvoyGatewayConfig(in *co
 	out.Channel = Channel(in.Channel)
 	out.ManageCRDs = (*bool)(unsafe.Pointer(in.ManageCRDs))
 	out.EnvoyProxyDefaults = (*EnvoyProxyDefaults)(unsafe.Pointer(in.EnvoyProxyDefaults))
+	out.ManageDataPlaneNetworkPolicies = (*bool)(unsafe.Pointer(in.ManageDataPlaneNetworkPolicies))
 	return nil
 }
 

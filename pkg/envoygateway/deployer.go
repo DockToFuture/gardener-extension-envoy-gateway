@@ -243,7 +243,6 @@ func (d *Deployer) buildResources(tls TLSBundle) (map[string][]byte, error) {
 		{"service.yaml", d.service()},
 		{"poddisruptionbudget.yaml", d.podDisruptionBudget()},
 		{"networkpolicy.yaml", d.networkPolicy()},
-		{"networkpolicy-proxies.yaml", d.networkPolicyForEnvoyProxies()},
 	}
 	for _, o := range objects {
 		if err := encode(o.name, o.obj); err != nil {
@@ -271,9 +270,16 @@ func (d *Deployer) buildResources(tls TLSBundle) (map[string][]byte, error) {
 	// sigs.k8s.io/gateway-api types into our deployer scheme.
 	resources["gatewayclass.yaml"] = []byte(d.gatewayClassYAML())
 	// Default EnvoyProxy CR referenced by the GatewayClass. Ships pod labels
-	// that let data-plane envoy pods pass Gardener's kube-system egress
-	// NetworkPolicies.
+	// that let data-plane envoy pods pass Gardener's default-deny egress
+	// NetworkPolicies in the Gateway's own namespace (GatewayNamespace deploy
+	// mode places the proxies there rather than in kube-system).
 	resources["envoyproxy-defaults.yaml"] = []byte(d.envoyProxyDefaultsYAML())
+	// ValidatingAdmissionPolicy (+ binding) that rejects the confused-deputy
+	// EnvoyProxy fields (patch, initContainers, arbitrary volumes/volumeMounts,
+	// pod/container securityContext) a namespaced user could otherwise use to
+	// make the control-plane controller mint attacker-controlled pods. Shipped
+	// as raw YAML because admissionregistration is not registered in shootScheme.
+	resources["validatingadmissionpolicy.yaml"] = []byte(envoyProxyGuardVAPYAML())
 
 	if d.config.ManageCRDs {
 		d.addCRDs(resources)
@@ -382,12 +388,25 @@ func (d *Deployer) configMap() *corev1.ConfigMap {
 	if logLevel == "" {
 		logLevel = LogLevelInfo
 	}
+	// provider.kubernetes.deploy.type=GatewayNamespace is hardcoded as a security
+	// control. In the default ControllerNamespace mode envoy-gateway provisions
+	// every Gateway's data-plane proxy Deployment (and its ServiceAccount) in the
+	// controller namespace (kube-system) using the controller's own privileged
+	// ServiceAccount — a namespaced user with create/update on Gateway/EnvoyProxy
+	// can weaponize that into a confused-deputy escalation. GatewayNamespace mode
+	// places the proxy and its ServiceAccount in the Gateway's OWN namespace,
+	// capping the blast radius to the tenant that created the Gateway.
 	cfg := fmt.Sprintf(`apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyGateway
 logging:
   level:
     default: %s
-`, logLevel)
+provider:
+  type: Kubernetes
+  kubernetes:
+    deploy:
+      type: %s
+`, logLevel, DeployModeGatewayNamespace)
 
 	return &corev1.ConfigMap{
 		TypeMeta: metav1.TypeMeta{
@@ -920,71 +939,27 @@ func (d *Deployer) networkPolicy() *networkingv1.NetworkPolicy {
 			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
 			Ingress: []networkingv1.NetworkPolicyIngressRule{{
 				From: []networkingv1.NetworkPolicyPeer{{
+					// In GatewayNamespace deploy mode the data-plane proxies run
+					// in each Gateway's own namespace, not alongside the
+					// control-plane in kube-system. A NetworkPolicy peer with a
+					// podSelector but no namespaceSelector matches only the
+					// policy's own namespace, so the empty (all-namespaces)
+					// namespaceSelector is required for the cross-namespace xDS
+					// and metrics connections to be authorized. Both selectors
+					// live in the same peer, so they are AND-ed: only pods
+					// carrying the canonical envoy-proxy labels, in any
+					// namespace, are allowed.
+					NamespaceSelector: &metav1.LabelSelector{},
 					PodSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{
-							LabelManagedBy: envoyProxyManagedByValue,
-							LabelName:      envoyProxyNameValue,
+							LabelManagedBy: EnvoyProxyManagedByValue,
+							LabelName:      EnvoyProxyNameValue,
 						},
 					},
 				}},
 				Ports: []networkingv1.NetworkPolicyPort{
 					{Protocol: &tcp, Port: &xdsPort},
 					{Protocol: &tcp, Port: &metricsPort},
-				},
-			}},
-		},
-	}
-}
-
-// networkPolicyForEnvoyProxies allows external traffic to reach the
-// data-plane Envoy proxies that envoy-gateway spawns per user-created
-// Gateway. Those proxies are exposed via a LoadBalancer Service; without
-// this policy, Gardener's default-deny NetworkPolicy in kube-system blocks
-// both the AWS ELB health checks (which hit the healthCheckNodePort) and the
-// actual client traffic that lands on the proxy's container port.
-//
-// The policy selects any pod that envoy-gateway has stamped with its
-// canonical labels (managed-by=envoy-gateway, name=envoy) and allows
-// ingress from anywhere on the well-known data-plane ports:
-//   - 10080/TCP — the shifted-up HTTP listener envoy-gateway configures
-//     for non-root pods to expose Service :80 as targetPort :10080
-//   - 10443/TCP — the shifted-up HTTPS listener envoy-gateway configures
-//     for non-root pods to expose Service :443 as targetPort :10443.
-//   - 19003/TCP — the readiness probe port envoy-gateway itself exposes
-//     on the envoy proxy pod for the LB health check to succeed
-func (d *Deployer) networkPolicyForEnvoyProxies() *networkingv1.NetworkPolicy {
-	httpPort := intstr.FromInt(10080)
-	httpsPort := intstr.FromInt(10443)
-	readyPort := intstr.FromInt(19003)
-	tcp := corev1.ProtocolTCP
-
-	return &networkingv1.NetworkPolicy{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "networking.k8s.io/v1",
-			Kind:       "NetworkPolicy",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      DeploymentName + "-proxies",
-			Namespace: Namespace,
-			Labels:    commonLabels(),
-		},
-		Spec: networkingv1.NetworkPolicySpec{
-			PodSelector: metav1.LabelSelector{
-				MatchLabels: map[string]string{
-					"app.kubernetes.io/managed-by": "envoy-gateway",
-					"app.kubernetes.io/name":       "envoy",
-				},
-			},
-			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
-			Ingress: []networkingv1.NetworkPolicyIngressRule{{
-				// Empty From: allow from anywhere. This is a data-plane
-				// ingress path — the whole point of a Gateway is to accept
-				// external traffic, so the security model here is exactly
-				// what the user opted into by creating a Gateway.
-				Ports: []networkingv1.NetworkPolicyPort{
-					{Protocol: &tcp, Port: &httpPort},
-					{Protocol: &tcp, Port: &httpsPort},
-					{Protocol: &tcp, Port: &readyPort},
 				},
 			}},
 		},
@@ -1080,8 +1055,10 @@ spec:
 		fmt.Fprint(&b, indentYAML(marshalResources(d.config.EnvoyProxyDefaults.Resources), 8, "container:\n"))
 	}
 
-	// The pod labels are mandatory: without them Gardener's kube-system
-	// default-deny NetworkPolicies block the data-plane proxy's egress.
+	// The pod labels are mandatory: without them Gardener's default-deny
+	// NetworkPolicies block the data-plane proxy's egress. In GatewayNamespace
+	// deploy mode the proxy runs in the Gateway's own namespace, where these
+	// shoot-wide networking labels apply just as they do in kube-system.
 	fmt.Fprint(&b, `        pod:
           labels:
             networking.gardener.cloud/to-apiserver: allowed
@@ -1125,4 +1102,96 @@ func indentYAML(s string, n int, header string) string {
 	}
 
 	return b.String()
+}
+
+// envoyProxyGuardVAPYAML returns a ValidatingAdmissionPolicy and its binding
+// (as a single multi-document YAML string) that reject the EnvoyProxy fields an
+// attacker can abuse to escape the data-plane sandbox: the free-form
+// whole-Deployment/DaemonSet patch (x-kubernetes-preserve-unknown-fields),
+// injected init containers, and arbitrary pod volumes, container volumeMounts,
+// and pod/container securityContext. Both spec.provider.kubernetes.envoyDeployment
+// and .envoyDaemonSet are guarded on CREATE and UPDATE. The policy fails closed
+// (failurePolicy: Fail) and, via the binding's namespaceSelector, does not apply
+// in kube-system so the extension's own default EnvoyProxy is exempt. On shoots
+// older than Kubernetes 1.30 the admissionregistration/v1 kinds do not exist and
+// the resource silently no-ops; the hardcoded GatewayNamespace deploy mode and
+// the image bump still protect those clusters.
+func envoyProxyGuardVAPYAML() string {
+	return `apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: ` + EnvoyProxyGuardPolicyName + `
+  labels:
+    ` + LabelManagedBy + `: ` + LabelManagedByValue + `
+    ` + LabelName + `: ` + EnvoyProxyManagedByValue + `
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups: ["` + apiGroupEnvoyGateway + `"]
+      apiVersions: ["v1alpha1"]
+      operations: ["CREATE", "UPDATE"]
+      resources: ["envoyproxies"]
+  variables:
+    - name: k8s
+      expression: "has(object.spec) && has(object.spec.provider) && has(object.spec.provider.kubernetes) ? object.spec.provider.kubernetes : null"
+    - name: deploy
+      expression: "variables.k8s != null && has(variables.k8s.envoyDeployment) ? variables.k8s.envoyDeployment : null"
+    - name: daemonset
+      expression: "variables.k8s != null && has(variables.k8s.envoyDaemonSet) ? variables.k8s.envoyDaemonSet : null"
+  validations:
+    - expression: "variables.deploy == null || !has(variables.deploy.patch)"
+      reason: Forbidden
+      message: "envoyDeployment.patch is not permitted on EnvoyProxy"
+    - expression: "variables.daemonset == null || !has(variables.daemonset.patch)"
+      reason: Forbidden
+      message: "envoyDaemonSet.patch is not permitted on EnvoyProxy"
+    - expression: "variables.deploy == null || !has(variables.deploy.initContainers)"
+      reason: Forbidden
+      message: "envoyDeployment.initContainers is not permitted on EnvoyProxy"
+    - expression: "variables.daemonset == null || !has(variables.daemonset.initContainers)"
+      reason: Forbidden
+      message: "envoyDaemonSet.initContainers is not permitted on EnvoyProxy"
+    - expression: "variables.deploy == null || !has(variables.deploy.pod) || !has(variables.deploy.pod.volumes)"
+      reason: Forbidden
+      message: "envoyDeployment.pod.volumes is not permitted on EnvoyProxy"
+    - expression: "variables.daemonset == null || !has(variables.daemonset.pod) || !has(variables.daemonset.pod.volumes)"
+      reason: Forbidden
+      message: "envoyDaemonSet.pod.volumes is not permitted on EnvoyProxy"
+    - expression: "variables.deploy == null || !has(variables.deploy.container) || !has(variables.deploy.container.volumeMounts)"
+      reason: Forbidden
+      message: "envoyDeployment.container.volumeMounts is not permitted on EnvoyProxy"
+    - expression: "variables.daemonset == null || !has(variables.daemonset.container) || !has(variables.daemonset.container.volumeMounts)"
+      reason: Forbidden
+      message: "envoyDaemonSet.container.volumeMounts is not permitted on EnvoyProxy"
+    - expression: "variables.deploy == null || !has(variables.deploy.pod) || !has(variables.deploy.pod.securityContext)"
+      reason: Forbidden
+      message: "envoyDeployment.pod.securityContext is not permitted on EnvoyProxy"
+    - expression: "variables.daemonset == null || !has(variables.daemonset.pod) || !has(variables.daemonset.pod.securityContext)"
+      reason: Forbidden
+      message: "envoyDaemonSet.pod.securityContext is not permitted on EnvoyProxy"
+    - expression: "variables.deploy == null || !has(variables.deploy.container) || !has(variables.deploy.container.securityContext)"
+      reason: Forbidden
+      message: "envoyDeployment.container.securityContext is not permitted on EnvoyProxy"
+    - expression: "variables.daemonset == null || !has(variables.daemonset.container) || !has(variables.daemonset.container.securityContext)"
+      reason: Forbidden
+      message: "envoyDaemonSet.container.securityContext is not permitted on EnvoyProxy"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: ` + EnvoyProxyGuardPolicyName + `
+  labels:
+    ` + LabelManagedBy + `: ` + LabelManagedByValue + `
+    ` + LabelName + `: ` + EnvoyProxyManagedByValue + `
+spec:
+  policyName: ` + EnvoyProxyGuardPolicyName + `
+  validationActions: ["Deny"]
+  matchResources:
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values: ["` + Namespace + `"]
+`
 }

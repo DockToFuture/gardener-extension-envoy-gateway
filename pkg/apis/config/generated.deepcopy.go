@@ -76,6 +76,11 @@ func (in *EnvoyGatewayConfig) DeepCopyInto(out *EnvoyGatewayConfig) {
 		*out = new(EnvoyProxyDefaults)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.ManageDataPlaneNetworkPolicies != nil {
+		in, out := &in.ManageDataPlaneNetworkPolicies, &out.ManageDataPlaneNetworkPolicies
+		*out = new(bool)
+		**out = **in
+	}
 	return
 }
 

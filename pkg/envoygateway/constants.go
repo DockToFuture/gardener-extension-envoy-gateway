@@ -48,6 +48,34 @@ const (
 	// controller name Envoy Gateway advertises.
 	GatewayClassControllerName = "gateway.envoyproxy.io/gatewayclass-controller"
 
+	// DeployModeGatewayNamespace is the Envoy Gateway provider.kubernetes.deploy.type
+	// value that places each Gateway's data-plane proxy Deployment, ServiceAccount,
+	// and supporting resources in the Gateway's own namespace instead of the
+	// controller namespace. Hardcoded as a security control to prevent a
+	// confused-deputy escalation into kube-system.
+	DeployModeGatewayNamespace = "GatewayNamespace"
+
+	// EnvoyProxyGuardPolicyName is the name of the ValidatingAdmissionPolicy (and
+	// its binding) that rejects dangerous EnvoyProxy fields (patch, initContainers,
+	// arbitrary volumes/volumeMounts/securityContext) at admission.
+	EnvoyProxyGuardPolicyName = "envoyproxy-deploy-guard.gardener.cloud"
+
+	// DataPlaneNetworkPolicyName is the name of the per-Gateway-namespace
+	// data-plane ingress NetworkPolicy the extension reconciles directly into the
+	// shoot when ManageDataPlaneNetworkPolicies is enabled. It doubles as the
+	// managed-policy label value used to select these policies for pruning.
+	DataPlaneNetworkPolicyName = "envoy-gateway-proxies"
+
+	// DataPlaneHTTPPort is the shifted-up HTTP listener port envoy-gateway
+	// configures for non-root data-plane proxies (Service :80 → targetPort).
+	DataPlaneHTTPPort = 10080
+	// DataPlaneHTTPSPort is the shifted-up HTTPS listener port envoy-gateway
+	// configures for non-root data-plane proxies (Service :443 → targetPort).
+	DataPlaneHTTPSPort = 10443
+	// DataPlaneReadyPort is the readiness-probe port envoy-gateway exposes on
+	// the data-plane proxy pods for the load-balancer health check.
+	DataPlaneReadyPort = 19003
+
 	// ClusterRoleName is the name of the ClusterRole for the Envoy Gateway controller.
 	ClusterRoleName = "envoy-gateway"
 
@@ -86,11 +114,12 @@ const (
 	// labelValueAllowed is the value Gardener's networking NetworkPolicies gate on.
 	labelValueAllowed = "allowed"
 
-	// envoyProxyManagedByValue and envoyProxyNameValue are the canonical labels
+	// EnvoyProxyManagedByValue and EnvoyProxyNameValue are the canonical labels
 	// envoy-gateway stamps on the data-plane Envoy proxy pods; the extension's
-	// NetworkPolicies select on them.
-	envoyProxyManagedByValue = "envoy-gateway"
-	envoyProxyNameValue      = "envoy"
+	// NetworkPolicies (both the control-plane one here and the in-shoot
+	// data-plane controller) select on them.
+	EnvoyProxyManagedByValue = "envoy-gateway"
+	EnvoyProxyNameValue      = "envoy"
 
 	// verbGet, verbList, verbWatch, verbCreate, verbUpdate, verbPatch, verbDelete
 	// are RBAC PolicyRule verbs used by the deployer.
