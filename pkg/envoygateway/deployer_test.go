@@ -13,6 +13,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/utils/ptr"
+	sigsyaml "sigs.k8s.io/yaml"
 
 	"github.com/gardener/gardener-extension-envoy-gateway/pkg/apis/config"
 )
@@ -23,7 +24,7 @@ func newTestImageVector(t *testing.T) imagevector.ImageVector {
 images:
 - name: envoy-gateway
   repository: docker.io/envoyproxy/gateway
-  tag: "v1.8.3"
+  tag: "v1.9.1"
 `))
 	if err != nil {
 		t.Fatalf("failed to construct test image vector: %v", err)
@@ -50,11 +51,80 @@ func TestGenerateResources_DefaultConfig(t *testing.T) {
 		"service.yaml",
 		"poddisruptionbudget.yaml",
 		"gatewayclass.yaml",
+		"validatingadmissionpolicy.yaml",
 	}
 	for _, name := range expected {
 		if _, ok := resources[name]; !ok {
 			t.Errorf("expected resource %q not found in generated resources", name)
 		}
+	}
+
+	// The dead kube-system data-plane policy must no longer be shipped — it is
+	// replaced by the opt-in in-shoot controller.
+	if _, ok := resources["networkpolicy-proxies.yaml"]; ok {
+		t.Error("did not expect networkpolicy-proxies.yaml to be generated")
+	}
+}
+
+func TestConfigMap_HardcodesGatewayNamespaceDeployMode(t *testing.T) {
+	d := NewDeployer(nil, logr.Discard(), DefaultConfig(), newTestImageVector(t))
+	cm := d.configMap()
+	body := cm.Data[ConfigFileName]
+
+	for _, want := range []string{"provider:", "type: Kubernetes", "type: GatewayNamespace"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected configMap body to contain %q\n---\n%s", want, body)
+		}
+	}
+}
+
+func TestGenerateResources_ShipsEnvoyProxyGuardVAP(t *testing.T) {
+	d := NewDeployer(nil, logr.Discard(), DefaultConfig(), newTestImageVector(t))
+	resources, err := d.GenerateResources()
+	if err != nil {
+		t.Fatalf("GenerateResources returned error: %v", err)
+	}
+
+	vap, ok := resources["validatingadmissionpolicy.yaml"]
+	if !ok {
+		t.Fatal("expected validatingadmissionpolicy.yaml in generated resources")
+	}
+	body := string(vap)
+	for _, want := range []string{
+		"kind: ValidatingAdmissionPolicy",
+		"ValidatingAdmissionPolicyBinding",
+		"envoyDeployment",
+		"envoyDaemonSet",
+		"patch",
+		"initContainers",
+		"validationActions",
+		"kube-system",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected VAP YAML to contain %q\n---\n%s", want, body)
+		}
+	}
+}
+
+func TestNetworkPolicy_AllowsCrossNamespaceProxies(t *testing.T) {
+	d := NewDeployer(nil, logr.Discard(), DefaultConfig(), newTestImageVector(t))
+	np := d.networkPolicy()
+
+	if len(np.Spec.Ingress) == 0 || len(np.Spec.Ingress[0].From) == 0 {
+		t.Fatal("expected networkPolicy to have an ingress peer")
+	}
+	peer := np.Spec.Ingress[0].From[0]
+	if peer.NamespaceSelector == nil {
+		t.Error("expected an all-namespaces NamespaceSelector on the ingress peer")
+	}
+	if peer.PodSelector == nil {
+		t.Fatal("expected a PodSelector on the ingress peer")
+	}
+	if got := peer.PodSelector.MatchLabels[LabelManagedBy]; got != EnvoyProxyManagedByValue {
+		t.Errorf("expected podSelector managed-by=%q, got %q", EnvoyProxyManagedByValue, got)
+	}
+	if got := peer.PodSelector.MatchLabels[LabelName]; got != EnvoyProxyNameValue {
+		t.Errorf("expected podSelector name=%q, got %q", EnvoyProxyNameValue, got)
 	}
 }
 
@@ -176,6 +246,23 @@ func TestDeployment_HonorsControlPlaneReplicas(t *testing.T) {
 	}
 	if deploy.Spec.Replicas == nil || *deploy.Spec.Replicas != 3 {
 		t.Fatalf("expected 3 control-plane replicas, got %v", deploy.Spec.Replicas)
+	}
+}
+
+func TestEnvoyProxyGuardVAPYAML_ParsesAsValidYAML(t *testing.T) {
+	body := envoyProxyGuardVAPYAML()
+	docs := strings.Split(body, "\n---\n")
+	if len(docs) != 2 {
+		t.Fatalf("expected VAP YAML to contain exactly 2 documents (policy + binding), got %d", len(docs))
+	}
+	for i, doc := range docs {
+		var obj map[string]any
+		if err := sigsyaml.Unmarshal([]byte(doc), &obj); err != nil {
+			t.Fatalf("VAP document %d failed to parse as YAML: %v\n---\n%s", i, err, doc)
+		}
+		if _, ok := obj["kind"]; !ok {
+			t.Errorf("VAP document %d has no kind field", i)
+		}
 	}
 }
 

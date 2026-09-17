@@ -56,7 +56,8 @@ type Actuator struct {
 	gardenerVersion       string
 	gardenletFeatureGates map[featuregate.Feature]bool
 
-	gatewayLister GatewayLister
+	gatewayLister    GatewayLister
+	netpolReconciler DataPlaneNetworkPolicyReconciler
 }
 
 var _ extension.Actuator = &Actuator{}
@@ -91,6 +92,10 @@ func New(c client.Client, imageVector imagevector.ImageVector, opts ...Option) (
 
 	if act.gatewayLister == nil {
 		act.gatewayLister = NewRealGatewayLister(c)
+	}
+
+	if act.netpolReconciler == nil {
+		act.netpolReconciler = NewRealDataPlaneNetworkPolicyReconciler(c)
 	}
 
 	return act, nil
@@ -129,6 +134,18 @@ func WithGardenletFeatures(feats map[featuregate.Feature]bool) Option {
 func WithGatewayLister(l GatewayLister) Option {
 	return func(a *Actuator) error {
 		a.gatewayLister = l
+
+		return nil
+	}
+}
+
+// WithDataPlaneNetworkPolicyReconciler configures the [Actuator] with a custom
+// [DataPlaneNetworkPolicyReconciler]. Useful in tests to inject a fake.
+// Production code does not need this — the constructor builds a real reconciler
+// by default.
+func WithDataPlaneNetworkPolicyReconciler(r DataPlaneNetworkPolicyReconciler) Option {
+	return func(a *Actuator) error {
+		a.netpolReconciler = r
 
 		return nil
 	}
@@ -177,6 +194,12 @@ func (a *Actuator) Reconcile(ctx context.Context, logger logr.Logger, ex *extens
 	}
 
 	egConfig := envoygateway.DefaultConfig()
+	// manageDataPlaneNetworkPolicies is a live shoot-side toggle: it drives the
+	// direct-write reconciliation of the per-Gateway-namespace ingress policies
+	// below, not the shoot ManagedResource (the resource-manager cache cannot
+	// reach arbitrary Gateway namespaces, so those policies are written by this
+	// actuator through an uncached shoot client instead).
+	var manageDataPlaneNetworkPolicies bool
 	if ex.Spec.ProviderConfig != nil {
 		var cfg config.EnvoyGatewayConfig
 		// Fail loudly on decode errors rather than silently falling back to
@@ -218,6 +241,13 @@ func (a *Actuator) Reconcile(ctx context.Context, logger logr.Logger, ex *extens
 		}
 
 		egConfig.EnvoyProxyDefaults = cfg.EnvoyProxyDefaults
+
+		// manageDataPlaneNetworkPolicies defaults to false; only an explicit true
+		// makes the actuator reconcile the per-namespace data-plane ingress
+		// NetworkPolicies directly into the shoot.
+		if cfg.ManageDataPlaneNetworkPolicies != nil {
+			manageDataPlaneNetworkPolicies = *cfg.ManageDataPlaneNetworkPolicies
+		}
 	}
 
 	deployer := envoygateway.NewDeployer(a.client, logger, egConfig, a.imageVector)
@@ -229,6 +259,21 @@ func (a *Actuator) Reconcile(ctx context.Context, logger logr.Logger, ex *extens
 
 	if err := deployer.Deploy(ctx, clusterName, tlsBundle); err != nil {
 		return fmt.Errorf("failed to deploy envoy-gateway: %w", err)
+	}
+
+	// Reconcile the data-plane ingress NetworkPolicies directly against the
+	// shoot API server. The desired set is the namespaces that currently hold a
+	// Gateway (empty when the feature is off), so a disabled feature converges to
+	// "no managed policies" — the same call prunes any that linger.
+	var desiredNetpolNamespaces []string
+	if manageDataPlaneNetworkPolicies {
+		desiredNetpolNamespaces, err = a.gatewayLister.ListGatewayNamespaces(ctx, clusterName)
+		if err != nil {
+			return fmt.Errorf("failed to list Gateway namespaces for data-plane NetworkPolicies: %w", err)
+		}
+	}
+	if err := a.netpolReconciler.Reconcile(ctx, clusterName, desiredNetpolNamespaces); err != nil {
+		return fmt.Errorf("failed to reconcile data-plane NetworkPolicies: %w", err)
 	}
 
 	logger.Info("successfully reconciled envoy-gateway extension", "cluster", clusterName)
@@ -318,6 +363,16 @@ func (a *Actuator) Delete(ctx context.Context, logger logr.Logger, ex *extension
 
 	if err := a.checkNoUserGateways(ctx, logger, cluster.Shoot, clusterName); err != nil {
 		return err
+	}
+
+	// Remove any data-plane NetworkPolicies we wrote directly into the shoot.
+	// Skip this when the whole shoot is being deleted: its API server may already
+	// be gone, and the policies vanish with the shoot regardless. On a live-shoot
+	// disable/removal, prune them so the shoot is left clean.
+	if cluster.Shoot == nil || cluster.Shoot.DeletionTimestamp == nil {
+		if err := a.netpolReconciler.Reconcile(ctx, clusterName, nil); err != nil {
+			return fmt.Errorf("failed to remove data-plane NetworkPolicies: %w", err)
+		}
 	}
 
 	deployer := envoygateway.NewDeployer(a.client, logger, envoygateway.DefaultConfig(), a.imageVector)

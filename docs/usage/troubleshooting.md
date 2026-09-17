@@ -69,6 +69,38 @@ Look at the `Programmed` and `Accepted` conditions.
 * **`Programmed=False, reason=AddressNotAssigned`** — same root cause,
   cloud-provider side.
 
+## Requests to the `Gateway` return `upstream connect error` (or work intermittently)
+
+Symptom: `curl` to the `Gateway`'s address returns
+
+```
+upstream connect error or disconnect/reset before headers. reset reason: connection timeout
+```
+
+either always, or alternating with successful responses.
+
+This error is generated **by Envoy itself**, which means external traffic *is*
+reaching the data-plane proxies — the ingress hop is fine. The failure is the
+**proxy → backend** hop: Envoy cannot open a connection to your upstream pods.
+
+On a shoot that enforces a default-deny `NetworkPolicy` posture, this is expected
+unless you have allowed the proxy↔backend traffic yourself.
+`manageDataPlaneNetworkPolicies` only opens ingress **to** the proxies; it
+deliberately does not open the proxies' egress to your backends, nor your
+backends' ingress from the proxies (the extension cannot know which pods are your
+legitimate upstreams). See
+[`manageDataPlaneNetworkPolicies`](configuration.md#managedataplanenetworkpolicies)
+for the two-policy pair you need to add per `Gateway` namespace.
+
+Intermittent success/failure is the same cause seen through a load balancer:
+with multiple proxy replicas and/or multiple backend pods, some paths are allowed
+(for example same-node traffic that the CNI does not drop) while others are
+denied, so round-robining alternates between them. Adding the proxy-egress and
+backend-ingress policies makes it uniform.
+
+If Envoy is reachable but returns `404`/`503` instead of a connect error, the
+problem is routing (`HTTPRoute`/`Gateway` config), not `NetworkPolicy`.
+
 ## `ManagedResource` is `Healthy=False` on the seed
 
 ```bash
