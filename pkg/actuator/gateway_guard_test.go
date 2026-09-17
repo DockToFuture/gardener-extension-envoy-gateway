@@ -14,13 +14,15 @@ import (
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	gatewayapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
 // fakeLister implements GatewayLister for unit tests without touching a real
 // shoot API server.
 type fakeLister struct {
-	names []string
-	err   error
+	names      []string
+	namespaces []string
+	err        error
 
 	clearErr          error
 	clearedNamespaces []string
@@ -34,6 +36,10 @@ func (f *fakeLister) ClearGatewayClassFinalizer(_ context.Context, seedNamespace
 	f.clearedNamespaces = append(f.clearedNamespaces, seedNamespace)
 
 	return f.clearErr
+}
+
+func (f *fakeLister) ListGatewayNamespaces(_ context.Context, _ string) ([]string, error) {
+	return f.namespaces, f.err
 }
 
 func newActuatorForTest(t *testing.T, lister GatewayLister) *Actuator {
@@ -120,5 +126,33 @@ func TestGatewaysInUseError_TruncatesLongLists(t *testing.T) {
 
 	if !strings.Contains(msg, "and 3 more") {
 		t.Errorf("expected truncation hint in long-list error, got: %s", msg)
+	}
+}
+
+func TestDedupeGatewayNamespaces_DedupesAndSorts(t *testing.T) {
+	list := &gatewayapiv1.GatewayList{
+		Items: []gatewayapiv1.Gateway{
+			{ObjectMeta: metav1.ObjectMeta{Namespace: "team-b", Name: "gw1"}},
+			{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "gw2"}},
+			// Second Gateway in team-b must not duplicate the namespace.
+			{ObjectMeta: metav1.ObjectMeta{Namespace: "team-b", Name: "gw3"}},
+		},
+	}
+
+	got := dedupeGatewayNamespaces(list)
+	want := []string{"team-a", "team-b"}
+	if len(got) != len(want) {
+		t.Fatalf("expected %v, got %v", want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("expected sorted deduped namespaces %v, got %v", want, got)
+		}
+	}
+}
+
+func TestDedupeGatewayNamespaces_Empty(t *testing.T) {
+	if got := dedupeGatewayNamespaces(&gatewayapiv1.GatewayList{}); len(got) != 0 {
+		t.Errorf("expected no namespaces for an empty list, got %v", got)
 	}
 }

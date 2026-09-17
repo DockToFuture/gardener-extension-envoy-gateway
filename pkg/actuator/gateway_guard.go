@@ -7,6 +7,7 @@ package actuator
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	extensionsconfigv1alpha1 "github.com/gardener/gardener/extensions/pkg/apis/config/v1alpha1"
 	extensionsutil "github.com/gardener/gardener/extensions/pkg/util"
@@ -39,6 +40,13 @@ type GatewayLister interface {
 	// extension's GatewayClass in the shoot. It is a no-op when the GatewayClass
 	// is already absent or carries no such finalizer.
 	ClearGatewayClassFinalizer(ctx context.Context, seedNamespace string) error
+
+	// ListGatewayNamespaces returns the deduped, sorted set of namespaces that
+	// hold at least one Gateway object in the shoot identified by the given
+	// seed-side control-plane namespace. It drives the data-plane NetworkPolicy
+	// emission: one policy is shipped per returned namespace. An empty slice
+	// means no namespace currently holds a Gateway.
+	ListGatewayNamespaces(ctx context.Context, seedNamespace string) ([]string, error)
 }
 
 // realGatewayLister builds a shoot client from the seed and lists Gateway
@@ -54,6 +62,50 @@ func NewRealGatewayLister(seedClient client.Client) GatewayLister {
 }
 
 func (r *realGatewayLister) ListGateways(ctx context.Context, seedNamespace string) ([]string, error) {
+	list, err := r.listGateways(ctx, seedNamespace)
+	if err != nil {
+		return nil, err
+	}
+
+	names := make([]string, 0, len(list.Items))
+	for _, g := range list.Items {
+		names = append(names, fmt.Sprintf("%s/%s", g.Namespace, g.Name))
+	}
+
+	return names, nil
+}
+
+func (r *realGatewayLister) ListGatewayNamespaces(ctx context.Context, seedNamespace string) ([]string, error) {
+	list, err := r.listGateways(ctx, seedNamespace)
+	if err != nil {
+		return nil, err
+	}
+
+	return dedupeGatewayNamespaces(list), nil
+}
+
+// dedupeGatewayNamespaces returns the deduped, sorted set of namespaces that
+// hold at least one Gateway in the list. Sorting yields a deterministic desired
+// set: an unstable order would otherwise churn the ManagedResource's resource
+// list on every reconcile.
+func dedupeGatewayNamespaces(list *gatewayapiv1.GatewayList) []string {
+	seen := make(map[string]struct{}, len(list.Items))
+	for _, g := range list.Items {
+		seen[g.Namespace] = struct{}{}
+	}
+
+	namespaces := make([]string, 0, len(seen))
+	for ns := range seen {
+		namespaces = append(namespaces, ns)
+	}
+	sort.Strings(namespaces)
+
+	return namespaces
+}
+
+// listGateways builds a shoot-scoped client and returns the raw GatewayList.
+// Both the delete guard and the NetworkPolicy emission derive from it.
+func (r *realGatewayLister) listGateways(ctx context.Context, seedNamespace string) (*gatewayapiv1.GatewayList, error) {
 	shootClient, err := r.shootClient(ctx, seedNamespace)
 	if err != nil {
 		return nil, err
@@ -64,12 +116,7 @@ func (r *realGatewayLister) ListGateways(ctx context.Context, seedNamespace stri
 		return nil, fmt.Errorf("failed to list Gateways in shoot: %w", err)
 	}
 
-	names := make([]string, 0, len(list.Items))
-	for _, g := range list.Items {
-		names = append(names, fmt.Sprintf("%s/%s", g.Namespace, g.Name))
-	}
-
-	return names, nil
+	return list, nil
 }
 
 // ClearGatewayClassFinalizer removes the gateway-exists finalizer from the

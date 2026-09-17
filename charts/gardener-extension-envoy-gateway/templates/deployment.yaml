@@ -67,6 +67,8 @@ spec:
             {{- range $key, $val := .Values.gardener.gardenlet.featureGates }}
             - --gardenlet-feature-gate={{ $key }}={{ $val }}
             {{- end }}
+          {{- if hasPrefix "sha256:" .Values.image.tag }}
+          {{- $extensionImage := printf "%s@%s" .Values.image.repository .Values.image.tag }}
           {{- if .Values.imageVectorOverwrite }}
           env:
             - name: IMAGEVECTOR_OVERWRITE
@@ -76,10 +78,19 @@ spec:
           securityContext:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- if hasPrefix "sha256:" .Values.image.tag }}
-          image: "{{ .Values.image.repository }}@{{ .Values.image.tag }}"
+          image: "{{ $extensionImage }}"
           {{- else }}
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          {{- $extensionImage := printf "%s:%s" .Values.image.repository (.Values.image.tag | default .Chart.AppVersion) }}
+          {{- if .Values.imageVectorOverwrite }}
+          env:
+            - name: IMAGEVECTOR_OVERWRITE
+              value: /charts_overwrite/images_overwrite.yaml
+          {{- end }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          image: "{{ $extensionImage }}"
           {{- end }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
