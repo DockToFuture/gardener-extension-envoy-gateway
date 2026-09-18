@@ -13,14 +13,20 @@ import (
 	"github.com/gardener/gardener-extension-envoy-gateway/pkg/envoygateway"
 )
 
+// Shared namespace fixtures used across the actuator tests.
+const (
+	nsTeamA = "team-a"
+	nsTeamB = "team-b"
+)
+
 func TestDataPlaneNetworkPolicy_Spec(t *testing.T) {
-	np := dataPlaneNetworkPolicy("team-a")
+	np := dataPlaneNetworkPolicy(nsTeamA)
 
 	if np.Name != envoygateway.DataPlaneNetworkPolicyName {
 		t.Errorf("expected policy name %q, got %q", envoygateway.DataPlaneNetworkPolicyName, np.Name)
 	}
-	if np.Namespace != "team-a" {
-		t.Errorf("expected namespace %q, got %q", "team-a", np.Namespace)
+	if np.Namespace != nsTeamA {
+		t.Errorf("expected namespace %q, got %q", nsTeamA, np.Namespace)
 	}
 
 	if got := np.Spec.PodSelector.MatchLabels[envoygateway.LabelManagedBy]; got != envoygateway.EnvoyProxyManagedByValue {
@@ -85,12 +91,12 @@ func policyIn(ns string) networkingv1.NetworkPolicy {
 
 func TestStalePolicies_KeepsDesiredDeletesRest(t *testing.T) {
 	existing := []networkingv1.NetworkPolicy{
-		policyIn("team-a"),
-		policyIn("team-b"),
+		policyIn(nsTeamA),
+		policyIn(nsTeamB),
 		policyIn("orphan"),
 	}
 
-	stale := stalePolicies(existing, []string{"team-a", "team-b"})
+	stale := stalePolicies(existing, []string{nsTeamA, nsTeamB})
 	if len(stale) != 1 {
 		t.Fatalf("expected exactly one stale policy, got %d: %v", len(stale), stale)
 	}
@@ -101,8 +107,8 @@ func TestStalePolicies_KeepsDesiredDeletesRest(t *testing.T) {
 
 func TestStalePolicies_EmptyDesiredDeletesAll(t *testing.T) {
 	existing := []networkingv1.NetworkPolicy{
-		policyIn("team-a"),
-		policyIn("team-b"),
+		policyIn(nsTeamA),
+		policyIn(nsTeamB),
 	}
 
 	stale := stalePolicies(existing, nil)
@@ -113,11 +119,11 @@ func TestStalePolicies_EmptyDesiredDeletesAll(t *testing.T) {
 
 func TestStalePolicies_AllDesiredNothingStale(t *testing.T) {
 	existing := []networkingv1.NetworkPolicy{
-		policyIn("team-a"),
-		policyIn("team-b"),
+		policyIn(nsTeamA),
+		policyIn(nsTeamB),
 	}
 
-	if stale := stalePolicies(existing, []string{"team-a", "team-b"}); len(stale) != 0 {
+	if stale := stalePolicies(existing, []string{nsTeamA, nsTeamB}); len(stale) != 0 {
 		t.Errorf("expected no stale policies when all are desired, got %v", stale)
 	}
 }
