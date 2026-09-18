@@ -101,15 +101,15 @@ func TestGatewaysInUseError_TruncatesLongLists(t *testing.T) {
 func TestDedupeGatewayNamespaces_DedupesAndSorts(t *testing.T) {
 	list := &gatewayapiv1.GatewayList{
 		Items: []gatewayapiv1.Gateway{
-			{ObjectMeta: metav1.ObjectMeta{Namespace: "team-b", Name: "gw1"}},
-			{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "gw2"}},
+			{ObjectMeta: metav1.ObjectMeta{Namespace: nsTeamB, Name: "gw1"}},
+			{ObjectMeta: metav1.ObjectMeta{Namespace: nsTeamA, Name: "gw2"}},
 			// Second Gateway in team-b must not duplicate the namespace.
-			{ObjectMeta: metav1.ObjectMeta{Namespace: "team-b", Name: "gw3"}},
+			{ObjectMeta: metav1.ObjectMeta{Namespace: nsTeamB, Name: "gw3"}},
 		},
 	}
 
 	got := dedupeGatewayNamespaces(list)
-	want := []string{"team-a", "team-b"}
+	want := []string{nsTeamA, nsTeamB}
 	if len(got) != len(want) {
 		t.Fatalf("expected %v, got %v", want, got)
 	}

@@ -7,7 +7,7 @@ package actuator
 import (
 	"context"
 	"fmt"
-	"sort"
+	"slices"
 
 	extensionsconfigv1alpha1 "github.com/gardener/gardener/extensions/pkg/apis/config/v1alpha1"
 	extensionsutil "github.com/gardener/gardener/extensions/pkg/util"
@@ -46,7 +46,7 @@ func NewRealGatewayLister(seedClient client.Client) GatewayLister {
 }
 
 func (r *realGatewayLister) ListGateways(ctx context.Context, seedNamespace string) ([]string, error) {
-	list, err := r.listGateways(ctx, seedNamespace)
+	list, err := r.fetchGatewayList(ctx, seedNamespace)
 	if err != nil {
 		return nil, err
 	}
@@ -60,7 +60,7 @@ func (r *realGatewayLister) ListGateways(ctx context.Context, seedNamespace stri
 }
 
 func (r *realGatewayLister) ListGatewayNamespaces(ctx context.Context, seedNamespace string) ([]string, error) {
-	list, err := r.listGateways(ctx, seedNamespace)
+	list, err := r.fetchGatewayList(ctx, seedNamespace)
 	if err != nil {
 		return nil, err
 	}
@@ -82,14 +82,14 @@ func dedupeGatewayNamespaces(list *gatewayapiv1.GatewayList) []string {
 	for ns := range seen {
 		namespaces = append(namespaces, ns)
 	}
-	sort.Strings(namespaces)
+	slices.Sort(namespaces)
 
 	return namespaces
 }
 
-// listGateways builds a shoot-scoped client and returns the raw GatewayList.
+// fetchGatewayList builds a shoot-scoped client and returns the raw GatewayList.
 // Both the delete guard and the NetworkPolicy emission derive from it.
-func (r *realGatewayLister) listGateways(ctx context.Context, seedNamespace string) (*gatewayapiv1.GatewayList, error) {
+func (r *realGatewayLister) fetchGatewayList(ctx context.Context, seedNamespace string) (*gatewayapiv1.GatewayList, error) {
 	// Build a shoot-scoped client. The function returns immediately after
 	// reading the kubeconfig secret — connectivity to the shoot API server
 	// is only checked on the first call we make below.
