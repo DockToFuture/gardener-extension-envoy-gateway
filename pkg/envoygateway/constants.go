@@ -119,7 +119,8 @@ const (
 	// NetworkPolicies (both the control-plane one here and the in-shoot
 	// data-plane controller) select on them.
 	EnvoyProxyManagedByValue = "envoy-gateway"
-	EnvoyProxyNameValue      = "envoy"
+	// EnvoyProxyNameValue is the app-name label value on the data-plane Envoy proxy pods.
+	EnvoyProxyNameValue = "envoy"
 
 	// verbGet, verbList, verbWatch, verbCreate, verbUpdate, verbPatch, verbDelete
 	// are RBAC PolicyRule verbs used by the deployer.
