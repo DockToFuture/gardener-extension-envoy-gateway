@@ -24,14 +24,10 @@ import (
 
 // DataPlaneNetworkPolicyReconciler reconciles the per-Gateway-namespace
 // data-plane ingress NetworkPolicies directly against the shoot API server.
-// They cannot ride the shoot ManagedResource: gardener-resource-manager
-// reconciles only a fixed set of namespaces and cannot reach arbitrary Gateway
-// namespaces.
 type DataPlaneNetworkPolicyReconciler interface {
 	// Reconcile makes the data-plane NetworkPolicies in the shoot match
 	// desiredNamespaces: the policy is created/updated in every desired namespace
-	// and deleted everywhere else. An empty desiredNamespaces removes all managed
-	// policies. It is idempotent.
+	// and deleted everywhere else.
 	Reconcile(ctx context.Context, seedNamespace string, desiredNamespaces []string) error
 }
 
@@ -126,11 +122,7 @@ func managedDataPlanePolicyLabels() client.MatchingLabels {
 
 // dataPlaneNetworkPolicy returns the data-plane ingress NetworkPolicy for a
 // single Gateway namespace. It selects the Envoy data-plane proxy pods and
-// allows ingress on the data-plane ports. The rule has no From, so it admits
-// traffic regardless of source: a Gateway may be fronted by an external or an
-// internal load balancer, and the extension does not manage which, so it does
-// not restrict the source here. Reachability is still bounded by the load
-// balancer's own scope and by the podSelector.
+// allows ingress on the data-plane ports.
 func dataPlaneNetworkPolicy(namespace string) *networkingv1.NetworkPolicy {
 	tcp := corev1.ProtocolTCP
 	httpPort := intstr.FromInt(envoygateway.DataPlaneHTTPPort)

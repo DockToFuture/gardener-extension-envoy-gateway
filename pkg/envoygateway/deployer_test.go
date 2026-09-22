@@ -23,7 +23,7 @@ func newTestImageVector(t *testing.T) imagevector.ImageVector {
 images:
 - name: envoy-gateway
   repository: docker.io/envoyproxy/gateway
-  tag: "v1.9.1"
+  tag: "v1.8.3"
 `))
 	if err != nil {
 		t.Fatalf("failed to construct test image vector: %v", err)

@@ -129,8 +129,6 @@ func WithGardenletFeatures(feats map[featuregate.Feature]bool) Option {
 }
 
 // WithGatewayLister configures the [Actuator] with a custom [GatewayLister].
-// Useful in tests to inject a fake. Production code does not need this — the
-// constructor builds a real lister by default.
 func WithGatewayLister(l GatewayLister) Option {
 	return func(a *Actuator) error {
 		a.gatewayLister = l
@@ -140,9 +138,7 @@ func WithGatewayLister(l GatewayLister) Option {
 }
 
 // WithDataPlaneNetworkPolicyReconciler configures the [Actuator] with a custom
-// [DataPlaneNetworkPolicyReconciler]. Useful in tests to inject a fake.
-// Production code does not need this — the constructor builds a real reconciler
-// by default.
+// [DataPlaneNetworkPolicyReconciler].
 func WithDataPlaneNetworkPolicyReconciler(r DataPlaneNetworkPolicyReconciler) Option {
 	return func(a *Actuator) error {
 		a.netpolReconciler = r
@@ -182,8 +178,10 @@ func (a *Actuator) Reconcile(ctx context.Context, logger logr.Logger, ex *extens
 	}
 
 	if cluster.Shoot.DeletionTimestamp != nil {
-		logger.Info("shoot is being deleted, deleting user Gateways and skipping envoy-gateway reconciliation", "cluster", clusterName)
-		a.deleteUserGatewaysOnShootDeletion(ctx, logger, clusterName)
+		// The shoot is being deleted. User Gateway cleanup happens in the Delete
+		// path (see checkNoUserGateways), which Gardener invokes on the extension
+		// during shoot deletion. Nothing to reconcile here.
+		logger.Info("shoot is being deleted, skipping envoy-gateway reconciliation", "cluster", clusterName)
 
 		return nil
 	}
@@ -198,11 +196,6 @@ func (a *Actuator) Reconcile(ctx context.Context, logger logr.Logger, ex *extens
 	var manageDataPlaneNetworkPolicies bool
 	if ex.Spec.ProviderConfig != nil {
 		var cfg config.EnvoyGatewayConfig
-		// Fail loudly on decode errors rather than silently falling back to
-		// defaults — a user who set providerConfig expects their settings to
-		// apply, and swallowing the error produces a "the extension ignored my
-		// config" bug that is very hard to spot. The Extension resource
-		// surfaces the returned error via its status conditions.
 		if err := runtime.DecodeInto(a.decoder, ex.Spec.ProviderConfig.Raw, &cfg); err != nil {
 			return fmt.Errorf("failed to decode envoy-gateway providerConfig: %w", err)
 		}
@@ -273,14 +266,6 @@ func (a *Actuator) Reconcile(ctx context.Context, logger logr.Logger, ex *extens
 	logger.Info("successfully reconciled envoy-gateway extension", "cluster", clusterName)
 
 	return nil
-}
-
-// deleteUserGatewaysOnShootDeletion deletes the user Gateway objects in the
-// shoot while it is being deleted.
-func (a *Actuator) deleteUserGatewaysOnShootDeletion(ctx context.Context, logger logr.Logger, clusterName string) {
-	if err := a.gatewayLister.DeleteGateways(ctx, clusterName); err != nil {
-		logger.Error(err, "failed to delete user Gateways during shoot deletion; will retry on next reconcile", "cluster", clusterName)
-	}
 }
 
 // reconcileSecrets generates (or rotates) the envoy-gateway CA and its xDS
@@ -359,8 +344,7 @@ func (a *Actuator) Delete(ctx context.Context, logger logr.Logger, ex *extension
 
 	// Prune the data-plane NetworkPolicies we wrote directly into the shoot, but
 	// only on a live-shoot disable/removal (Shoot present and not itself being
-	// deleted). When the whole shoot is being deleted, skip it: the shoot API
-	// server may already be gone and the policies vanish with the shoot anyway.
+	// deleted).
 	if cluster.Shoot == nil || cluster.Shoot.DeletionTimestamp == nil {
 		if err := a.netpolReconciler.Reconcile(ctx, clusterName, nil); err != nil {
 			return fmt.Errorf("failed to remove data-plane NetworkPolicies: %w", err)
@@ -406,15 +390,27 @@ func (a *Actuator) deleteSecrets(
 	return sm.Cleanup(ctx)
 }
 
-// checkNoUserGateways is the live-Gateway delete guard from GEP-68. It runs
+// checkNoUserGateways is the live-Gateway delete guard. It runs
 // before the actuator removes the ManagedResource and refuses the operation
 // when user-owned Gateway objects still exist in the shoot — unless the entire
-// shoot is being deleted, in which case the guard is bypassed (blocking would
-// only leak the shoot, and LB Services are cleaned up by the cloud-provider
-// extension anyway).
+// shoot is being deleted.
 func (a *Actuator) checkNoUserGateways(ctx context.Context, logger logr.Logger, shoot *gardencorev1beta1.Shoot, clusterName string) error {
 	if shoot != nil && shoot.DeletionTimestamp != nil {
-		// Guard bypassed on shoot deletion
+		if err := a.gatewayLister.DeleteGateways(ctx, clusterName); err != nil {
+			logger.Error(err, "failed to delete user Gateways during shoot deletion; continuing", "cluster", clusterName)
+		}
+
+		waitCtx, cancel := context.WithTimeout(ctx, GatewayDeletionTimeout)
+		defer cancel()
+		if err := a.gatewayLister.WaitUntilGatewaysDeleted(waitCtx, clusterName); err != nil {
+			if errors.Is(err, ErrGatewaysStillDeleting) {
+				// Still present, API server reachable: requeue rather than orphan LBs.
+				return fmt.Errorf("waiting for user Gateways to drain from shoot before deleting envoy-gateway: %w", err)
+			}
+
+			logger.Error(err, "gave up waiting for user Gateways to drain during shoot deletion; continuing", "cluster", clusterName)
+		}
+
 		if err := a.gatewayLister.ClearGatewayClassFinalizer(ctx, clusterName); err != nil {
 			logger.Error(err, "failed to clear GatewayClass finalizer during shoot deletion; continuing", "cluster", clusterName)
 		}
@@ -485,9 +481,6 @@ func (a *Actuator) Migrate(ctx context.Context, logger logr.Logger, ex *extensio
 	return nil
 }
 
-// applyLogLevel validates a configured log level and, when set, writes it to
-// the target. An empty level is left untouched so the deployer's default
-// ("info") stands.
 func applyLogLevel(level config.LogLevel, target *string) error {
 	if level == "" {
 		return nil
@@ -500,9 +493,6 @@ func applyLogLevel(level config.LogLevel, target *string) error {
 	return nil
 }
 
-// recordOperation writes the standard actuator metrics for a single lifecycle
-// operation. Called from a deferred closure in every actuator method so total,
-// duration, and (on failure) the classified error counter stay in one place.
 func recordOperation(cluster, op string, start time.Time, err error) {
 	metrics.ActuatorOperationTotal.WithLabelValues(cluster, op).Inc()
 	metrics.ActuatorOperationDurationSeconds.WithLabelValues(cluster, op).Set(time.Since(start).Seconds())
@@ -511,9 +501,6 @@ func recordOperation(cluster, op string, start time.Time, err error) {
 	}
 }
 
-// classifyError maps an actuator error to a small, bounded set of reason
-// labels for Prometheus. Cardinality must stay low: the metric label is meant
-// for alert routing, not for search. Anything not matched falls into "other".
 func classifyError(err error) string {
 	if err == nil {
 		return ""
