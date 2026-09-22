@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/yaml"
@@ -77,7 +78,7 @@ func init() {
 		policyv1.SchemeGroupVersion,
 		networkingv1.SchemeGroupVersion,
 		admissionregistrationv1.SchemeGroupVersion,
-		gatewayapiv1.SchemeGroupVersion,
+		schema.GroupVersion{Group: gatewayapiv1.GroupName, Version: gatewayapiv1.GroupVersion.Version},
 	)
 }
 
@@ -995,7 +996,7 @@ func (d *Deployer) gatewayClass() *gatewayapiv1.GatewayClass {
 
 	return &gatewayapiv1.GatewayClass{
 		TypeMeta: metav1.TypeMeta{
-			APIVersion: gatewayapiv1.SchemeGroupVersion.String(),
+			APIVersion: gatewayapiv1.GroupVersion.String(),
 			Kind:       "GatewayClass",
 		},
 		ObjectMeta: metav1.ObjectMeta{
@@ -1214,7 +1215,8 @@ func envoyProxyGuard() (*admissionregistrationv1.ValidatingAdmissionPolicy, *adm
 // "variables.deploy == null || !has(variables.deploy.pod) || !has(variables.deploy.pod.volumes)".
 func fieldAbsentExpression(workload, field string) string {
 	parts := strings.Split(field, ".")
-	terms := []string{fmt.Sprintf("variables.%s == null", workload)}
+	terms := make([]string, 0, 1+len(parts))
+	terms = append(terms, fmt.Sprintf("variables.%s == null", workload))
 	path := "variables." + workload
 	for _, p := range parts {
 		terms = append(terms, fmt.Sprintf("!has(%s.%s)", path, p))
