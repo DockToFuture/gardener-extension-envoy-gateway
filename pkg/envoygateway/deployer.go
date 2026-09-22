@@ -945,13 +945,16 @@ func (d *Deployer) networkPolicy() *networkingv1.NetworkPolicy {
 //
 // The policy selects any pod that envoy-gateway has stamped with its
 // canonical labels (managed-by=envoy-gateway, name=envoy) and allows
-// ingress from anywhere on the two well-known data-plane ports:
+// ingress from anywhere on the well-known data-plane ports:
 //   - 10080/TCP — the shifted-up HTTP listener envoy-gateway configures
 //     for non-root pods to expose Service :80 as targetPort :10080
+//   - 10443/TCP — the shifted-up HTTPS listener envoy-gateway configures
+//     for non-root pods to expose Service :443 as targetPort :10443.
 //   - 19003/TCP — the readiness probe port envoy-gateway itself exposes
 //     on the envoy proxy pod for the LB health check to succeed
 func (d *Deployer) networkPolicyForEnvoyProxies() *networkingv1.NetworkPolicy {
-	dataPort := intstr.FromInt(10080)
+	httpPort := intstr.FromInt(10080)
+	httpsPort := intstr.FromInt(10443)
 	readyPort := intstr.FromInt(19003)
 	tcp := corev1.ProtocolTCP
 
@@ -979,7 +982,8 @@ func (d *Deployer) networkPolicyForEnvoyProxies() *networkingv1.NetworkPolicy {
 				// external traffic, so the security model here is exactly
 				// what the user opted into by creating a Gateway.
 				Ports: []networkingv1.NetworkPolicyPort{
-					{Protocol: &tcp, Port: &dataPort},
+					{Protocol: &tcp, Port: &httpPort},
+					{Protocol: &tcp, Port: &httpsPort},
 					{Protocol: &tcp, Port: &readyPort},
 				},
 			}},
