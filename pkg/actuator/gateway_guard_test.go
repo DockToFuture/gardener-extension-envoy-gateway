@@ -26,6 +26,9 @@ type fakeLister struct {
 
 	clearErr          error
 	clearedNamespaces []string
+
+	deleteErr         error
+	deletedNamespaces []string
 }
 
 func (f *fakeLister) ListGateways(_ context.Context, _ string) ([]string, error) {
@@ -42,10 +45,40 @@ func (f *fakeLister) ListGatewayNamespaces(_ context.Context, _ string) ([]strin
 	return f.namespaces, f.err
 }
 
+func (f *fakeLister) DeleteGateways(_ context.Context, seedNamespace string) error {
+	f.deletedNamespaces = append(f.deletedNamespaces, seedNamespace)
+
+	return f.deleteErr
+}
+
 func newActuatorForTest(t *testing.T, lister GatewayLister) *Actuator {
 	t.Helper()
 
 	return &Actuator{gatewayLister: lister}
+}
+
+func TestDeleteUserGatewaysOnShootDeletion_DeletesGateways(t *testing.T) {
+	f := &fakeLister{}
+	a := newActuatorForTest(t, f)
+
+	a.deleteUserGatewaysOnShootDeletion(context.Background(), logr.Discard(), "shoot--p--c")
+
+	if got := f.deletedNamespaces; len(got) != 1 || got[0] != "shoot--p--c" {
+		t.Errorf("expected DeleteGateways called once with the seed namespace, got: %v", got)
+	}
+}
+
+func TestDeleteUserGatewaysOnShootDeletion_DeleteErrorDoesNotWedge(t *testing.T) {
+	f := &fakeLister{deleteErr: errors.New("shoot api server unreachable")}
+	a := newActuatorForTest(t, f)
+
+	// A delete failure must be swallowed (logged) so it cannot wedge the
+	// deletion flow; the next reconcile retries.
+	a.deleteUserGatewaysOnShootDeletion(context.Background(), logr.Discard(), "shoot--p--c")
+
+	if len(f.deletedNamespaces) != 1 {
+		t.Errorf("expected DeleteGateways to have been attempted once, got: %v", f.deletedNamespaces)
+	}
 }
 
 func TestCheckNoUserGateways_ShootBeingDeleted_BypassesGuard(t *testing.T) {

@@ -182,7 +182,8 @@ func (a *Actuator) Reconcile(ctx context.Context, logger logr.Logger, ex *extens
 	}
 
 	if cluster.Shoot.DeletionTimestamp != nil {
-		logger.Info("shoot is being deleted, skipping envoy-gateway reconciliation", "cluster", clusterName)
+		logger.Info("shoot is being deleted, deleting user Gateways and skipping envoy-gateway reconciliation", "cluster", clusterName)
+		a.deleteUserGatewaysOnShootDeletion(ctx, logger, clusterName)
 
 		return nil
 	}
@@ -274,6 +275,14 @@ func (a *Actuator) Reconcile(ctx context.Context, logger logr.Logger, ex *extens
 	return nil
 }
 
+// deleteUserGatewaysOnShootDeletion deletes the user Gateway objects in the
+// shoot while it is being deleted.
+func (a *Actuator) deleteUserGatewaysOnShootDeletion(ctx context.Context, logger logr.Logger, clusterName string) {
+	if err := a.gatewayLister.DeleteGateways(ctx, clusterName); err != nil {
+		logger.Error(err, "failed to delete user Gateways during shoot deletion; will retry on next reconcile", "cluster", clusterName)
+	}
+}
+
 // reconcileSecrets generates (or rotates) the envoy-gateway CA and its xDS
 // server cert via Gardener's secrets-manager, returns a [envoygateway.TLSBundle]
 // ready to ship into the shoot, and runs the manager's cleanup so old
@@ -330,16 +339,6 @@ func (a *Actuator) reconcileSecrets(
 }
 
 // Delete removes Envoy Gateway from the shoot cluster.
-//
-// Because lifecycle.delete is BeforeKubeAPIServer, the shoot API server is
-// still reachable; resource-manager cleanly removes the shoot objects.
-//
-// When the shoot itself is *not* being deleted (the user disabled or removed
-// the extension on a live shoot), we refuse to proceed while user-owned
-// Gateway objects still exist in the shoot — pulling the extension out
-// underneath live Gateways would silently lose traffic. When the entire shoot
-// is being deleted, the guard is bypassed: blocking would only leak the shoot
-// and the LB Services are cleaned up by the cloud-provider extension anyway.
 func (a *Actuator) Delete(ctx context.Context, logger logr.Logger, ex *extensionsv1alpha1.Extension) (retErr error) {
 	clusterName := ex.Namespace
 	start := time.Now()
@@ -415,9 +414,7 @@ func (a *Actuator) deleteSecrets(
 // extension anyway).
 func (a *Actuator) checkNoUserGateways(ctx context.Context, logger logr.Logger, shoot *gardencorev1beta1.Shoot, clusterName string) error {
 	if shoot != nil && shoot.DeletionTimestamp != nil {
-		// Guard bypassed on shoot deletion, but the torn-down envoy-gateway
-		// controller may leave its finalizer on the GatewayClass and wedge
-		// teardown. Clear it best-effort; a failure here must not block delete.
+		// Guard bypassed on shoot deletion
 		if err := a.gatewayLister.ClearGatewayClassFinalizer(ctx, clusterName); err != nil {
 			logger.Error(err, "failed to clear GatewayClass finalizer during shoot deletion; continuing", "cluster", clusterName)
 		}
