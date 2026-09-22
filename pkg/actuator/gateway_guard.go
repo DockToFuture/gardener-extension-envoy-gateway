@@ -47,6 +47,10 @@ type GatewayLister interface {
 	// emission: one policy is shipped per returned namespace. An empty slice
 	// means no namespace currently holds a Gateway.
 	ListGatewayNamespaces(ctx context.Context, seedNamespace string) ([]string, error)
+
+	// DeleteGateways deletes all Gateway objects across all namespaces in the
+	// shoot identified by the given seed-side control-plane namespace.
+	DeleteGateways(ctx context.Context, seedNamespace string) error
 }
 
 // realGatewayLister builds a shoot client from the seed and lists Gateway
@@ -121,8 +125,7 @@ func (r *realGatewayLister) fetchGatewayList(ctx context.Context, seedNamespace 
 
 // ClearGatewayClassFinalizer removes the gateway-exists finalizer from the
 // extension's GatewayClass so it can finish deleting once the envoy-gateway
-// control plane is gone. A missing GatewayClass or missing finalizer is a
-// no-op.
+// control plane is gone.
 func (r *realGatewayLister) ClearGatewayClassFinalizer(ctx context.Context, seedNamespace string) error {
 	shootClient, err := r.shootClient(ctx, seedNamespace)
 	if err != nil {
@@ -145,14 +148,38 @@ func (r *realGatewayLister) ClearGatewayClassFinalizer(ctx context.Context, seed
 	return nil
 }
 
+// DeleteGateways deletes all Gateway objects in the shoot.
+func (r *realGatewayLister) DeleteGateways(ctx context.Context, seedNamespace string) error {
+	shootClient, err := r.shootClient(ctx, seedNamespace)
+	if err != nil {
+		return err
+	}
+
+	list := &gatewayapiv1.GatewayList{}
+	if err := shootClient.List(ctx, list); err != nil {
+		return fmt.Errorf("failed to list Gateways in shoot: %w", err)
+	}
+
+	for i := range list.Items {
+		gw := &list.Items[i]
+		if gw.DeletionTimestamp != nil {
+			// Already terminating; nothing to do.
+			continue
+		}
+		if err := shootClient.Delete(ctx, gw); client.IgnoreNotFound(err) != nil {
+			return fmt.Errorf("failed to delete Gateway %s/%s in shoot: %w", gw.Namespace, gw.Name, err)
+		}
+	}
+
+	return nil
+}
+
 func (r *realGatewayLister) shootClient(ctx context.Context, seedNamespace string) (client.Client, error) {
 	scheme, err := newGatewayScheme()
 	if err != nil {
 		return nil, err
 	}
 
-	// NewClientForShoot returns after reading the kubeconfig secret; the shoot
-	// API server is only contacted on the first request through the client.
 	_, shootClient, err := extensionsutil.NewClientForShoot(
 		ctx,
 		r.seedClient,
