@@ -724,11 +724,6 @@ func (d *Deployer) deployment() (*appsv1.Deployment, error) {
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: ServiceAccountName,
-					// The PDB (minAvailable=1) is meaningless if both replicas can
-					// land on the same node, and the TopologySpreadConstraint is
-					// meaningless if both can land in the same zone. Both are
-					// preferred (not required) so single-node/single-zone shoots
-					// still schedule.
 					Affinity: &corev1.Affinity{
 						PodAntiAffinity: &corev1.PodAntiAffinity{
 							PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{
@@ -784,11 +779,6 @@ func (d *Deployer) deployment() (*appsv1.Deployment, error) {
 							},
 						},
 						{
-							// envoy-gateway uses /var/lib/eg as scratch for its wasm
-							// module cache. The container root is read-only for
-							// hardening, so we carve out a bounded emptyDir here —
-							// per-pod, non-persistent, capped at 100Mi to prevent a
-							// compromised process from exhausting node scratch space.
 							Name: "wasm-cache",
 							VolumeSource: corev1.VolumeSource{
 								EmptyDir: &corev1.EmptyDirVolumeSource{
@@ -806,14 +796,6 @@ func (d *Deployer) deployment() (*appsv1.Deployment, error) {
 								fmt.Sprintf("--config-path=%s/%s", ConfigMountPath, ConfigFileName),
 							},
 							Env: []corev1.EnvVar{
-								// envoy-gateway reads ENVOY_GATEWAY_NAMESPACE as its
-								// ControllerNamespace at startup. It backs the
-								// leader-election lease namespace, the watch namespace
-								// for owned objects, and the in-cluster API endpoint
-								// for its components. We deploy into kube-system, so
-								// this env var must reflect that — otherwise the pod
-								// reaches into the upstream default "envoy-gateway-system"
-								// where it has neither RBAC nor a Service.
 								{
 									Name: "ENVOY_GATEWAY_NAMESPACE",
 									ValueFrom: &corev1.EnvVarSource{
@@ -960,16 +942,6 @@ func (d *Deployer) networkPolicy() *networkingv1.NetworkPolicy {
 			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
 			Ingress: []networkingv1.NetworkPolicyIngressRule{{
 				From: []networkingv1.NetworkPolicyPeer{{
-					// In GatewayNamespace deploy mode the data-plane proxies run
-					// in each Gateway's own namespace, not alongside the
-					// control-plane in kube-system. A NetworkPolicy peer with a
-					// podSelector but no namespaceSelector matches only the
-					// policy's own namespace, so the empty (all-namespaces)
-					// namespaceSelector is required for the cross-namespace xDS
-					// and metrics connections to be authorized. Both selectors
-					// live in the same peer, so they are AND-ed: only pods
-					// carrying the canonical envoy-proxy labels, in any
-					// namespace, are allowed.
 					NamespaceSelector: &metav1.LabelSelector{},
 					PodSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{
@@ -1076,10 +1048,6 @@ spec:
 		fmt.Fprint(&b, indentYAML(marshalResources(d.config.EnvoyProxyDefaults.Resources), 8, "container:\n"))
 	}
 
-	// The pod labels are mandatory: without them Gardener's default-deny
-	// NetworkPolicies block the data-plane proxy's egress. In GatewayNamespace
-	// deploy mode the proxy runs in the Gateway's own namespace, where these
-	// shoot-wide networking labels apply just as they do in kube-system.
 	fmt.Fprint(&b, `        pod:
           labels:
             networking.gardener.cloud/to-apiserver: allowed
@@ -1090,10 +1058,6 @@ spec:
 	return b.String()
 }
 
-// marshalResources renders a ResourceRequirements into YAML under a
-// "resources:" key. Errors are swallowed into an empty string — the caller
-// only reaches this path when Resources is non-nil, and a malformed
-// ResourceList cannot occur from the typed API.
 func marshalResources(r *corev1.ResourceRequirements) string {
 	out, err := sigsyaml.Marshal(map[string]any{"resources": r})
 	if err != nil {
@@ -1103,10 +1067,6 @@ func marshalResources(r *corev1.ResourceRequirements) string {
 	return string(out)
 }
 
-// indentYAML prefixes every non-empty line of s with n spaces and prepends the
-// given header (already at the target indentation). Used to splice a
-// marshalled sub-document into the hand-built EnvoyProxy YAML at the right
-// depth.
 func indentYAML(s string, n int, header string) string {
 	pad := strings.Repeat(" ", n)
 	var b strings.Builder
@@ -1129,8 +1089,6 @@ func indentYAML(s string, n int, header string) string {
 // reject the EnvoyProxy fields an attacker can abuse to escape the data-plane
 // sandbox (patch, initContainers, pod volumes, container volumeMounts, and
 // pod/container securityContext), on both envoyDeployment and envoyDaemonSet.
-// The policy fails closed and, via the binding's namespaceSelector, is not
-// applied in kube-system so the extension's own default EnvoyProxy is exempt.
 func envoyProxyGuard() (*admissionregistrationv1.ValidatingAdmissionPolicy, *admissionregistrationv1.ValidatingAdmissionPolicyBinding) {
 	guardLabels := map[string]string{
 		LabelManagedBy: LabelManagedByValue,
