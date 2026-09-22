@@ -21,10 +21,19 @@ import (
 type fakeLister struct {
 	names []string
 	err   error
+
+	clearErr          error
+	clearedNamespaces []string
 }
 
 func (f *fakeLister) ListGateways(_ context.Context, _ string) ([]string, error) {
 	return f.names, f.err
+}
+
+func (f *fakeLister) ClearGatewayClassFinalizer(_ context.Context, seedNamespace string) error {
+	f.clearedNamespaces = append(f.clearedNamespaces, seedNamespace)
+
+	return f.clearErr
 }
 
 func newActuatorForTest(t *testing.T, lister GatewayLister) *Actuator {
@@ -34,12 +43,34 @@ func newActuatorForTest(t *testing.T, lister GatewayLister) *Actuator {
 }
 
 func TestCheckNoUserGateways_ShootBeingDeleted_BypassesGuard(t *testing.T) {
-	a := newActuatorForTest(t, &fakeLister{names: []string{"default/gw"}})
+	f := &fakeLister{names: []string{"default/gw"}}
+	a := newActuatorForTest(t, f)
 	now := metav1.NewTime(time.Now())
 	shoot := &gardencorev1beta1.Shoot{ObjectMeta: metav1.ObjectMeta{DeletionTimestamp: &now}}
 
 	if err := a.checkNoUserGateways(context.Background(), logr.Discard(), shoot, "shoot--p--c"); err != nil {
 		t.Fatalf("expected nil error when shoot is being deleted, got: %v", err)
+	}
+
+	// Guard is bypassed, but the leftover GatewayClass finalizer must still be
+	// cleared so teardown can complete.
+	if got := f.clearedNamespaces; len(got) != 1 || got[0] != "shoot--p--c" {
+		t.Errorf("expected ClearGatewayClassFinalizer called once with the seed namespace, got: %v", got)
+	}
+}
+
+func TestCheckNoUserGateways_ShootBeingDeleted_ClearErrorDoesNotBlock(t *testing.T) {
+	f := &fakeLister{clearErr: errors.New("shoot api server unreachable")}
+	a := newActuatorForTest(t, f)
+	now := metav1.NewTime(time.Now())
+	shoot := &gardencorev1beta1.Shoot{ObjectMeta: metav1.ObjectMeta{DeletionTimestamp: &now}}
+
+	// A finalizer-clear failure must not turn a clean delete into a hang.
+	if err := a.checkNoUserGateways(context.Background(), logr.Discard(), shoot, "shoot--p--c"); err != nil {
+		t.Fatalf("expected nil error even when clearing the finalizer fails, got: %v", err)
+	}
+	if len(f.clearedNamespaces) != 1 {
+		t.Errorf("expected ClearGatewayClassFinalizer to have been attempted once, got: %v", f.clearedNamespaces)
 	}
 }
 

@@ -367,6 +367,13 @@ func (a *Actuator) deleteSecrets(
 // extension anyway).
 func (a *Actuator) checkNoUserGateways(ctx context.Context, logger logr.Logger, shoot *gardencorev1beta1.Shoot, clusterName string) error {
 	if shoot != nil && shoot.DeletionTimestamp != nil {
+		// Guard bypassed on shoot deletion, but the torn-down envoy-gateway
+		// controller may leave its finalizer on the GatewayClass and wedge
+		// teardown. Clear it best-effort; a failure here must not block delete.
+		if err := a.gatewayLister.ClearGatewayClassFinalizer(ctx, clusterName); err != nil {
+			logger.Error(err, "failed to clear GatewayClass finalizer during shoot deletion; continuing", "cluster", clusterName)
+		}
+
 		return nil
 	}
 

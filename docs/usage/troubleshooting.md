@@ -112,6 +112,16 @@ Then remove the `spec.extensions[]` entry from the Shoot. The guard is
 bypassed automatically when the entire shoot itself is being deleted
 (`shoot.deletionTimestamp != nil`).
 
+> **Recommended.** Delete your `Gateway` (and any custom `GatewayClass`)
+> objects *before* disabling the extension or terminating the shoot. This
+> avoids the guard on a live shoot and avoids a slow, finalizer-driven
+> teardown on deletion.
+>
+> If you forget on shoot deletion, the extension self-heals: it clears the
+> upstream `gateway-exists-finalizer.gateway.networking.k8s.io` finalizer from
+> the `gardener-envoy-gateway` GatewayClass so the GatewayClass, its CRD, and
+> the extension's `ManagedResource` no longer hang in `Terminating`.
+
 ## Admission webhook rejects the Shoot
 
 Typical rejection messages:

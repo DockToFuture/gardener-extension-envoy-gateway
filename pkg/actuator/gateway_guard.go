@@ -10,19 +10,35 @@ import (
 
 	extensionsconfigv1alpha1 "github.com/gardener/gardener/extensions/pkg/apis/config/v1alpha1"
 	extensionsutil "github.com/gardener/gardener/extensions/pkg/util"
+	"github.com/gardener/gardener/pkg/controllerutils"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayapiv1 "sigs.k8s.io/gateway-api/apis/v1"
+
+	"github.com/gardener/gardener-extension-envoy-gateway/pkg/envoygateway"
 )
 
-// GatewayLister lists Gateway objects in a shoot. It is injectable so that
-// unit tests can replace the production implementation (which requires a
-// running shoot API server) with an in-memory fake.
+// gatewayExistsFinalizer is the finalizer the upstream Envoy Gateway controller
+// puts on a GatewayClass while Gateways reference it. On shoot deletion that
+// controller is gone and cannot remove it, wedging the GatewayClass, its CRD,
+// and our ManagedResource in Terminating — so we clear it ourselves.
+const gatewayExistsFinalizer = "gateway-exists-finalizer.gateway.networking.k8s.io"
+
+// GatewayLister lists Gateway objects in a shoot and clears the leftover
+// GatewayClass finalizer during shoot deletion. It is injectable so that unit
+// tests can replace the production implementation (which requires a running
+// shoot API server) with an in-memory fake.
 type GatewayLister interface {
 	// ListGateways returns the names of Gateway objects (namespace/name) that
 	// exist in the shoot identified by the given seed-side control-plane
 	// namespace. An empty slice means the shoot is empty of user Gateways.
 	ListGateways(ctx context.Context, seedNamespace string) ([]string, error)
+
+	// ClearGatewayClassFinalizer removes the gateway-exists finalizer from the
+	// extension's GatewayClass in the shoot. It is a no-op when the GatewayClass
+	// is already absent or carries no such finalizer.
+	ClearGatewayClassFinalizer(ctx context.Context, seedNamespace string) error
 }
 
 // realGatewayLister builds a shoot client from the seed and lists Gateway
@@ -38,23 +54,9 @@ func NewRealGatewayLister(seedClient client.Client) GatewayLister {
 }
 
 func (r *realGatewayLister) ListGateways(ctx context.Context, seedNamespace string) ([]string, error) {
-	// Build a shoot-scoped client. The function returns immediately after
-	// reading the kubeconfig secret — connectivity to the shoot API server
-	// is only checked on the first call we make below.
-	scheme, err := newGatewayScheme()
+	shootClient, err := r.shootClient(ctx, seedNamespace)
 	if err != nil {
 		return nil, err
-	}
-
-	_, shootClient, err := extensionsutil.NewClientForShoot(
-		ctx,
-		r.seedClient,
-		seedNamespace,
-		client.Options{Scheme: scheme},
-		extensionsconfigv1alpha1.RESTOptions{},
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build shoot client: %w", err)
 	}
 
 	list := &gatewayapiv1.GatewayList{}
@@ -68,6 +70,54 @@ func (r *realGatewayLister) ListGateways(ctx context.Context, seedNamespace stri
 	}
 
 	return names, nil
+}
+
+// ClearGatewayClassFinalizer removes the gateway-exists finalizer from the
+// extension's GatewayClass so it can finish deleting once the envoy-gateway
+// control plane is gone. A missing GatewayClass or missing finalizer is a
+// no-op.
+func (r *realGatewayLister) ClearGatewayClassFinalizer(ctx context.Context, seedNamespace string) error {
+	shootClient, err := r.shootClient(ctx, seedNamespace)
+	if err != nil {
+		return err
+	}
+
+	gwc := &gatewayapiv1.GatewayClass{}
+	if err := shootClient.Get(ctx, client.ObjectKey{Name: envoygateway.GatewayClassName}, gwc); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+
+		return fmt.Errorf("failed to get GatewayClass %q in shoot: %w", envoygateway.GatewayClassName, err)
+	}
+
+	if err := controllerutils.RemoveFinalizers(ctx, shootClient, gwc, gatewayExistsFinalizer); err != nil {
+		return fmt.Errorf("failed to clear %q finalizer from GatewayClass %q: %w", gatewayExistsFinalizer, envoygateway.GatewayClassName, err)
+	}
+
+	return nil
+}
+
+func (r *realGatewayLister) shootClient(ctx context.Context, seedNamespace string) (client.Client, error) {
+	scheme, err := newGatewayScheme()
+	if err != nil {
+		return nil, err
+	}
+
+	// NewClientForShoot returns after reading the kubeconfig secret; the shoot
+	// API server is only contacted on the first request through the client.
+	_, shootClient, err := extensionsutil.NewClientForShoot(
+		ctx,
+		r.seedClient,
+		seedNamespace,
+		client.Options{Scheme: scheme},
+		extensionsconfigv1alpha1.RESTOptions{},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build shoot client: %w", err)
+	}
+
+	return shootClient, nil
 }
 
 // gatewaysInUseError indicates that the extension cannot be deleted because
