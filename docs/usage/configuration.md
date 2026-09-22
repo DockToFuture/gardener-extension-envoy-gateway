@@ -92,20 +92,29 @@ When `true`, the extension reconciles an ingress `NetworkPolicy` named
 `envoy-gateway-proxies` into every shoot namespace that holds a `Gateway`. The
 policy selects the data-plane proxy pods
 (`app.kubernetes.io/managed-by: envoy-gateway`, `app.kubernetes.io/name: envoy`)
-and allows ingress **from anywhere** on the data-plane ports (`10080`, `19003`),
-so external traffic reaching the `Gateway`'s load balancer can be delivered to
-the proxies on a cluster that enforces a default-deny `NetworkPolicy` posture.
-Defaults to `false`.
+and allows ingress **from anywhere** on the data-plane ports (`10080`, `10443`,
+`19003`), so traffic reaching the `Gateway`'s load balancer — external or
+internal — can be delivered to the proxies on a cluster that enforces a
+default-deny `NetworkPolicy` posture. Defaults to `false`.
 
-The extension writes these policies directly to the shoot on every reconcile
-(they cannot travel through the shoot `ManagedResource`, because
-gardener-resource-manager only reconciles a fixed set of namespaces and cannot
-reach arbitrary `Gateway` namespaces). It owns their full lifecycle: a policy is
-created when a namespace gains its first `Gateway` and removed once the namespace
-no longer holds one, or when the feature is disabled.
+Three ports are opened because they serve different callers on the ingress hop:
 
-Only enable this on shoots whose network plugin enforces `NetworkPolicy` objects
-and where the default-deny posture would otherwise block `Gateway` traffic.
+- `10080` / `10443` — the HTTP and HTTPS listeners that carry user traffic.
+  Envoy Gateway shifts the Service's `:80`/`:443` down to these target ports
+  because the proxies run non-root and cannot bind privileged ports.
+- `19003` — the proxy's readiness endpoint (`/readyz`), probed by the kubelet
+  and, in IP-target LB modes (e.g. GKE NEG, AWS NLB `target-type: ip`), by the
+  load balancer directly. Opening it keeps the proxies visible as ready
+  endpoints regardless of how the cloud provider wires the LB health check.
+
+The extension writes these policies directly to the shoot and owns their full
+lifecycle: a policy is created when a namespace gains its first `Gateway` and
+removed once the namespace no longer holds one, or when the feature is disabled.
+They cannot travel through the shoot `ManagedResource`, which reconciles only a
+fixed set of namespaces and so cannot reach arbitrary `Gateway` namespaces.
+
+Enable this only on shoots whose default-deny `NetworkPolicy` posture would
+otherwise block `Gateway` traffic.
 
 > **Scope — this covers only the *ingress* hop to the proxies.** A request to a
 > `Gateway` traverses three hops, and on a default-deny namespace each must be
@@ -115,7 +124,7 @@ and where the default-deny posture would otherwise block `Gateway` traffic.
 > |-----|------------|
 > | client → Envoy proxy (proxy ingress) | `manageDataPlaneNetworkPolicies` — **this feature** |
 > | Envoy proxy → your backend (proxy egress) | **you** |
-> | your backend ← Envoy proxy (backend ingress) | **you** |
+> | Envoy proxy → your backend (backend ingress) | **you** |
 >
 > The extension deliberately does not manage the proxy→backend hops: it cannot
 > know which pods are your legitimate upstreams, and opening egress from the
