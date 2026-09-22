@@ -97,10 +97,7 @@ type EnvoyGatewayConfig struct {
 	// Gateway via the gateway.envoyproxy.io/v1alpha1.EnvoyProxy reference.
 	EnvoyProxyDefaults *EnvoyProxyDefaults
 
-	// ManageDataPlaneNetworkPolicies, when true, makes the extension reconcile a
-	// data-plane ingress NetworkPolicy into each shoot namespace that holds a
-	// Gateway, allowing external traffic to the Envoy proxies. Defaults to false.
-	// Enable it on shoots whose default-deny NetworkPolicy posture would otherwise
-	// block Gateway traffic.
+	// ManageDataPlaneNetworkPolicies, when true, let the extension reconcile a
+	// NetworkPolicy into each shoot namespace that holds a Gateway.
 	ManageDataPlaneNetworkPolicies *bool
 }
