@@ -13,7 +13,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/utils/ptr"
-	sigsyaml "sigs.k8s.io/yaml"
 
 	"github.com/gardener/gardener-extension-envoy-gateway/pkg/apis/config"
 )
@@ -91,7 +90,7 @@ func TestGenerateResources_ShipsEnvoyProxyGuardVAP(t *testing.T) {
 	}
 	body := string(vap)
 	for _, want := range []string{
-		"kind: ValidatingAdmissionPolicy",
+		"ValidatingAdmissionPolicy",
 		"ValidatingAdmissionPolicyBinding",
 		"envoyDeployment",
 		"envoyDaemonSet",
@@ -249,20 +248,23 @@ func TestDeployment_HonorsControlPlaneReplicas(t *testing.T) {
 	}
 }
 
-func TestEnvoyProxyGuardVAPYAML_ParsesAsValidYAML(t *testing.T) {
-	body := envoyProxyGuardVAPYAML()
-	docs := strings.Split(body, "\n---\n")
-	if len(docs) != 2 {
-		t.Fatalf("expected VAP YAML to contain exactly 2 documents (policy + binding), got %d", len(docs))
+func TestEnvoyProxyGuard_ProducesPolicyAndBinding(t *testing.T) {
+	policy, binding := envoyProxyGuard()
+	if policy == nil || binding == nil {
+		t.Fatal("expected both a policy and a binding")
 	}
-	for i, doc := range docs {
-		var obj map[string]any
-		if err := sigsyaml.Unmarshal([]byte(doc), &obj); err != nil {
-			t.Fatalf("VAP document %d failed to parse as YAML: %v\n---\n%s", i, err, doc)
-		}
-		if _, ok := obj["kind"]; !ok {
-			t.Errorf("VAP document %d has no kind field", i)
-		}
+	if policy.Kind != "ValidatingAdmissionPolicy" {
+		t.Errorf("expected policy kind ValidatingAdmissionPolicy, got %q", policy.Kind)
+	}
+	if binding.Kind != "ValidatingAdmissionPolicyBinding" {
+		t.Errorf("expected binding kind ValidatingAdmissionPolicyBinding, got %q", binding.Kind)
+	}
+	// Six guarded fields on two workloads → twelve validations.
+	if got := len(policy.Spec.Validations); got != 12 {
+		t.Errorf("expected 12 validations, got %d", got)
+	}
+	if binding.Spec.PolicyName != policy.Name {
+		t.Errorf("binding policyName %q does not match policy name %q", binding.Spec.PolicyName, policy.Name)
 	}
 }
 

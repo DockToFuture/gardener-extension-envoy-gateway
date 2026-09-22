@@ -95,7 +95,7 @@ func New(c client.Client, imageVector imagevector.ImageVector, opts ...Option) (
 	}
 
 	if act.netpolReconciler == nil {
-		act.netpolReconciler = NewRealDataPlaneNetworkPolicyReconciler(c)
+		act.netpolReconciler = NewDataPlaneNetworkPolicyReconciler(c)
 	}
 
 	return act, nil
@@ -194,11 +194,6 @@ func (a *Actuator) Reconcile(ctx context.Context, logger logr.Logger, ex *extens
 	}
 
 	egConfig := envoygateway.DefaultConfig()
-	// manageDataPlaneNetworkPolicies is a live shoot-side toggle: it drives the
-	// direct-write reconciliation of the per-Gateway-namespace ingress policies
-	// below, not the shoot ManagedResource (the resource-manager cache cannot
-	// reach arbitrary Gateway namespaces, so those policies are written by this
-	// actuator through an uncached shoot client instead).
 	var manageDataPlaneNetworkPolicies bool
 	if ex.Spec.ProviderConfig != nil {
 		var cfg config.EnvoyGatewayConfig
@@ -242,9 +237,8 @@ func (a *Actuator) Reconcile(ctx context.Context, logger logr.Logger, ex *extens
 
 		egConfig.EnvoyProxyDefaults = cfg.EnvoyProxyDefaults
 
-		// manageDataPlaneNetworkPolicies defaults to false; only an explicit true
-		// makes the actuator reconcile the per-namespace data-plane ingress
-		// NetworkPolicies directly into the shoot.
+		// Defaults to false; only an explicit true makes the actuator reconcile
+		// the per-namespace data-plane ingress NetworkPolicies into the shoot.
 		if cfg.ManageDataPlaneNetworkPolicies != nil {
 			manageDataPlaneNetworkPolicies = *cfg.ManageDataPlaneNetworkPolicies
 		}
@@ -261,10 +255,9 @@ func (a *Actuator) Reconcile(ctx context.Context, logger logr.Logger, ex *extens
 		return fmt.Errorf("failed to deploy envoy-gateway: %w", err)
 	}
 
-	// Reconcile the data-plane ingress NetworkPolicies directly against the
-	// shoot API server. The desired set is the namespaces that currently hold a
-	// Gateway (empty when the feature is off), so a disabled feature converges to
-	// "no managed policies" — the same call prunes any that linger.
+	// Reconcile the data-plane ingress NetworkPolicies against the shoot. The
+	// desired set is the namespaces that currently hold a Gateway (empty when the
+	// feature is off), so a disabled feature converges to no managed policies.
 	var desiredNetpolNamespaces []string
 	if manageDataPlaneNetworkPolicies {
 		desiredNetpolNamespaces, err = a.gatewayLister.ListGatewayNamespaces(ctx, clusterName)
@@ -365,10 +358,10 @@ func (a *Actuator) Delete(ctx context.Context, logger logr.Logger, ex *extension
 		return err
 	}
 
-	// Remove any data-plane NetworkPolicies we wrote directly into the shoot.
-	// Skip this when the whole shoot is being deleted: its API server may already
-	// be gone, and the policies vanish with the shoot regardless. On a live-shoot
-	// disable/removal, prune them so the shoot is left clean.
+	// Prune the data-plane NetworkPolicies we wrote directly into the shoot, but
+	// only on a live-shoot disable/removal (Shoot present and not itself being
+	// deleted). When the whole shoot is being deleted, skip it: the shoot API
+	// server may already be gone and the policies vanish with the shoot anyway.
 	if cluster.Shoot == nil || cluster.Shoot.DeletionTimestamp == nil {
 		if err := a.netpolReconciler.Reconcile(ctx, clusterName, nil); err != nil {
 			return fmt.Errorf("failed to remove data-plane NetworkPolicies: %w", err)
