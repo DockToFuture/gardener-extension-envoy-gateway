@@ -178,12 +178,9 @@ func (a *Actuator) Reconcile(ctx context.Context, logger logr.Logger, ex *extens
 	}
 
 	if cluster.Shoot.DeletionTimestamp != nil {
-		// The shoot is being deleted. User Gateway cleanup happens in the Delete
-		// path (see checkNoUserGateways), which Gardener invokes on the extension
-		// during shoot deletion. Nothing to reconcile here.
-		logger.Info("shoot is being deleted, skipping envoy-gateway reconciliation", "cluster", clusterName)
-
-		return nil
+		// Shoot is being deleted: drain user Gateways now so Envoy Gateway releases
+		// the LB Service early, then short-circuit the rest of reconciliation.
+		return a.drainUserGatewaysForShootDeletion(ctx, logger, clusterName)
 	}
 
 	if v1beta1helper.HibernationIsEnabled(cluster.Shoot) {
@@ -396,26 +393,7 @@ func (a *Actuator) deleteSecrets(
 // shoot is being deleted.
 func (a *Actuator) checkNoUserGateways(ctx context.Context, logger logr.Logger, shoot *gardencorev1beta1.Shoot, clusterName string) error {
 	if shoot != nil && shoot.DeletionTimestamp != nil {
-		if err := a.gatewayLister.DeleteGateways(ctx, clusterName); err != nil {
-			logger.Error(err, "failed to delete user Gateways during shoot deletion; continuing", "cluster", clusterName)
-		}
-
-		waitCtx, cancel := context.WithTimeout(ctx, GatewayDeletionTimeout)
-		defer cancel()
-		if err := a.gatewayLister.WaitUntilGatewaysDeleted(waitCtx, clusterName); err != nil {
-			if errors.Is(err, ErrGatewaysStillDeleting) {
-				// Still present, API server reachable: requeue rather than orphan LBs.
-				return fmt.Errorf("waiting for user Gateways to drain from shoot before deleting envoy-gateway: %w", err)
-			}
-
-			logger.Error(err, "gave up waiting for user Gateways to drain during shoot deletion; continuing", "cluster", clusterName)
-		}
-
-		if err := a.gatewayLister.ClearGatewayClassFinalizer(ctx, clusterName); err != nil {
-			logger.Error(err, "failed to clear GatewayClass finalizer during shoot deletion; continuing", "cluster", clusterName)
-		}
-
-		return nil
+		return a.drainUserGatewaysForShootDeletion(ctx, logger, clusterName)
 	}
 
 	names, err := a.gatewayLister.ListGateways(ctx, clusterName)
@@ -432,6 +410,46 @@ func (a *Actuator) checkNoUserGateways(ctx context.Context, logger logr.Logger, 
 	metrics.DeleteGuardRejectionsTotal.WithLabelValues(clusterName).Inc()
 
 	return &gatewaysInUseError{names: names}
+}
+
+// drainUserGatewaysForShootDeletion deletes user Gateways and waits for them to
+// drain (so Envoy Gateway releases their LB Services), then clears the leftover
+// GatewayClass finalizer. Shared by the Reconcile-on-deletion and Delete paths.
+func (a *Actuator) drainUserGatewaysForShootDeletion(ctx context.Context, logger logr.Logger, clusterName string) error {
+	// Log the Gateways present so the shoot-delete flow is verifiable.
+	if names, err := a.gatewayLister.ListGateways(ctx, clusterName); err != nil {
+		logger.Error(err, "failed to list user Gateways during shoot deletion; continuing", "cluster", clusterName)
+	} else {
+		logger.Info("shoot is being deleted, draining user Gateways before removing envoy-gateway",
+			"cluster", clusterName, "count", len(names), "gateways", names)
+	}
+
+	if err := a.gatewayLister.DeleteGateways(ctx, clusterName); err != nil {
+		logger.Error(err, "failed to delete user Gateways during shoot deletion; continuing", "cluster", clusterName)
+	}
+
+	waitCtx, cancel := context.WithTimeout(ctx, GatewayDeletionTimeout)
+	defer cancel()
+	if err := a.gatewayLister.WaitUntilGatewaysDeleted(waitCtx, clusterName); err != nil {
+		if errors.Is(err, ErrGatewaysStillDeleting) {
+			// Still present, API server reachable: requeue rather than orphan LBs.
+			logger.Info("user Gateways still draining, requeuing before removing envoy-gateway", "cluster", clusterName)
+
+			return fmt.Errorf("waiting for user Gateways to drain from shoot before deleting envoy-gateway: %w", err)
+		}
+
+		logger.Error(err, "gave up waiting for user Gateways to drain during shoot deletion; continuing", "cluster", clusterName)
+	} else {
+		logger.Info("user Gateways drained from shoot", "cluster", clusterName)
+	}
+
+	if err := a.gatewayLister.ClearGatewayClassFinalizer(ctx, clusterName); err != nil {
+		logger.Error(err, "failed to clear GatewayClass finalizer during shoot deletion; continuing", "cluster", clusterName)
+	} else {
+		logger.Info("cleared GatewayClass finalizer, envoy-gateway can be removed", "cluster", clusterName)
+	}
+
+	return nil
 }
 
 // ForceDelete deletes the ManagedResource without waiting for shoot-side cleanup.
