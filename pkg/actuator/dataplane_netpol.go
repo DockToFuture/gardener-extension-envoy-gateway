@@ -125,15 +125,8 @@ func managedDataPlanePolicyLabels() client.MatchingLabels {
 // allows ingress on the data-plane ports.
 func dataPlaneNetworkPolicy(namespace string) *networkingv1.NetworkPolicy {
 	tcp := corev1.ProtocolTCP
-	httpPort := intstr.FromInt(envoygateway.DataPlaneHTTPPort)
-	httpsPort := intstr.FromInt(envoygateway.DataPlaneHTTPSPort)
-	readyPort := intstr.FromInt(envoygateway.DataPlaneReadyPort)
 
 	return &networkingv1.NetworkPolicy{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "networking.k8s.io/v1",
-			Kind:       "NetworkPolicy",
-		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      envoygateway.DataPlaneNetworkPolicyName,
 			Namespace: namespace,
@@ -152,9 +145,9 @@ func dataPlaneNetworkPolicy(namespace string) *networkingv1.NetworkPolicy {
 			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
 			Ingress: []networkingv1.NetworkPolicyIngressRule{{
 				Ports: []networkingv1.NetworkPolicyPort{
-					{Protocol: &tcp, Port: &httpPort},
-					{Protocol: &tcp, Port: &httpsPort},
-					{Protocol: &tcp, Port: &readyPort},
+					{Protocol: &tcp, Port: new(intstr.FromInt(envoygateway.DataPlaneHTTPPort))},
+					{Protocol: &tcp, Port: new(intstr.FromInt(envoygateway.DataPlaneHTTPSPort))},
+					{Protocol: &tcp, Port: new(intstr.FromInt(envoygateway.DataPlaneReadyPort))},
 				},
 			}},
 		},

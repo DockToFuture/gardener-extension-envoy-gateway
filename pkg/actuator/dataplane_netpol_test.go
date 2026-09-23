@@ -127,3 +127,14 @@ func TestStalePolicies_AllDesiredNothingStale(t *testing.T) {
 		t.Errorf("expected no stale policies when all are desired, got %v", stale)
 	}
 }
+
+// Multiple Gateways in one namespace collapse to a single shared policy; the
+// namespace may still appear more than once in the desired set, and that must
+// not cause the one policy to be pruned.
+func TestStalePolicies_DuplicateDesiredNamespaceKeepsSinglePolicy(t *testing.T) {
+	existing := []networkingv1.NetworkPolicy{policyIn(nsTeamA)}
+
+	if stale := stalePolicies(existing, []string{nsTeamA, nsTeamA}); len(stale) != 0 {
+		t.Errorf("expected the shared policy to be kept when its namespace is desired multiple times, got %v", stale)
+	}
+}
