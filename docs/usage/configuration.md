@@ -191,7 +191,8 @@ shoot's control-plane namespace on the seed. The contents of the
 
 The data-plane ingress `NetworkPolicy` objects are **not** part of the
 `ManagedResource`; when `manageDataPlaneNetworkPolicies` is enabled the extension
-writes them directly into the `Gateway` namespaces (see that field above).
+writes them directly into the `Gateway` namespaces (see
+[`manageDataPlaneNetworkPolicies`](#managedataplanenetworkpolicies) above).
 
 The Envoy Gateway control plane spawns one Envoy data-plane Deployment +
 LoadBalancer Service per user-created `Gateway`, in `kube-system`. The
