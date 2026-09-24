@@ -111,16 +111,15 @@ const (
 	// apiGroupEnvoyGateway is the Envoy Gateway resource group.
 	apiGroupEnvoyGateway = "gateway.envoyproxy.io"
 
-	// OwningGatewayNameLabel and OwningGatewayNamespaceLabel are the labels
-	// envoy-gateway stamps on every per-Gateway data-plane infra object
-	// (Deployment, Service, ServiceAccount, ConfigMap, PDB, HPA) it provisions,
-	// naming the Gateway that owns it. The control-plane resources this extension
-	// deploys into kube-system carry NEITHER label, so the presence of
-	// OwningGatewayNameLabel cleanly distinguishes envoy-gateway's per-Gateway
-	// data-plane objects from our control plane. Used by the orphan sweep to
-	// find data-plane proxy resources that the pre-GatewayNamespace deploy mode
-	// left behind in kube-system. Values are fixed by envoy-gateway.
-	OwningGatewayNameLabel      = "gateway.envoyproxy.io/owning-gateway-name"
+	// OwningGatewayNameLabel is the label envoy-gateway stamps on every
+	// per-Gateway data-plane infra object (Deployment, Service, ServiceAccount,
+	// ConfigMap, PDB, HPA) it provisions, naming the Gateway that owns it. The
+	// control-plane resources this extension deploys into kube-system carry no
+	// owning-gateway-* label, so the presence of this label cleanly distinguishes
+	// envoy-gateway's per-Gateway data-plane objects from our control plane.
+	OwningGatewayNameLabel = "gateway.envoyproxy.io/owning-gateway-name"
+	// OwningGatewayNamespaceLabel is the companion to [OwningGatewayNameLabel]
+	// naming the namespace of the owning Gateway. Value is fixed by envoy-gateway.
 	OwningGatewayNamespaceLabel = "gateway.envoyproxy.io/owning-gateway-namespace"
 
 	// labelValueAllowed is the value Gardener's networking NetworkPolicies gate on.
