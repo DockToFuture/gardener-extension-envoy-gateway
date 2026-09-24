@@ -41,14 +41,14 @@ func TestIsOrphanedDataPlaneObject(t *testing.T) {
 	}{
 		{
 			name:   "per-gateway data-plane object is orphaned",
-			labels: ownedBy("team-a", "gw1"),
+			labels: ownedBy(nsTeamA, "gw1"),
 			want:   true,
 		},
 		{
 			name: "control-plane object without owning-gateway label is kept",
 			labels: map[string]string{
 				envoygateway.LabelManagedBy: envoygateway.EnvoyProxyManagedByValue,
-				envoygateway.LabelName:      "envoy-gateway",
+				envoygateway.LabelName:      envoygateway.DeploymentName,
 			},
 			want: false,
 		},
@@ -79,25 +79,29 @@ func TestIsOrphanedDataPlaneObject(t *testing.T) {
 // objects and objects in other namespaces untouched, and that a second run is a
 // no-op (idempotent).
 func TestSweepOrphans_DeletesOnlyDataPlaneObjects(t *testing.T) {
-	const ns = envoygateway.Namespace // kube-system
+	const (
+		ns          = envoygateway.Namespace // kube-system
+		orphanName  = "envoy-team-a-gw1-abcde"
+		newModeName = "envoy-team-b-gw2-fghij"
+	)
 
-	orphanSvc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "envoy-team-a-gw1-abcde", Namespace: ns, Labels: ownedBy("team-a", "gw1")}}
-	orphanDeploy := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "envoy-team-a-gw1-abcde", Namespace: ns, Labels: ownedBy("team-a", "gw1")}}
-	orphanSA := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "envoy-team-a-gw1-abcde", Namespace: ns, Labels: ownedBy("team-a", "gw1")}}
-	orphanCM := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "envoy-team-a-gw1-abcde", Namespace: ns, Labels: ownedBy("team-a", "gw1")}}
-	orphanPDB := &policyv1.PodDisruptionBudget{ObjectMeta: metav1.ObjectMeta{Name: "envoy-team-a-gw1-abcde", Namespace: ns, Labels: ownedBy("team-a", "gw1")}}
+	orphanSvc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: orphanName, Namespace: ns, Labels: ownedBy(nsTeamA, "gw1")}}
+	orphanDeploy := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: orphanName, Namespace: ns, Labels: ownedBy(nsTeamA, "gw1")}}
+	orphanSA := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: orphanName, Namespace: ns, Labels: ownedBy(nsTeamA, "gw1")}}
+	orphanCM := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: orphanName, Namespace: ns, Labels: ownedBy(nsTeamA, "gw1")}}
+	orphanPDB := &policyv1.PodDisruptionBudget{ObjectMeta: metav1.ObjectMeta{Name: orphanName, Namespace: ns, Labels: ownedBy(nsTeamA, "gw1")}}
 
 	// Control-plane objects: same managed-by label, but no owning-gateway label.
-	cpDeploy := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "envoy-gateway", Namespace: ns, Labels: map[string]string{
+	cpDeploy := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: envoygateway.DeploymentName, Namespace: ns, Labels: map[string]string{
 		envoygateway.LabelManagedBy: envoygateway.EnvoyProxyManagedByValue,
 	}}}
-	cpSvc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "envoy-gateway", Namespace: ns, Labels: map[string]string{
+	cpSvc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: envoygateway.DeploymentName, Namespace: ns, Labels: map[string]string{
 		envoygateway.LabelManagedBy: envoygateway.EnvoyProxyManagedByValue,
 	}}}
 
 	// A data-plane object already living in the Gateway's own namespace (the new
 	// mode): the sweep is scoped to kube-system, so it must be left alone.
-	newModeSvc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "envoy-team-a-gw1-abcde", Namespace: "team-a", Labels: ownedBy("team-a", "gw1")}}
+	newModeSvc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: newModeName, Namespace: nsTeamB, Labels: ownedBy(nsTeamB, "gw2")}}
 
 	c := fake.NewClientBuilder().WithScheme(kubernetesscheme.Scheme).WithObjects(
 		orphanSvc, orphanDeploy, orphanSA, orphanCM, orphanPDB,

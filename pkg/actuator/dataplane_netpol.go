@@ -66,12 +66,13 @@ func (r *dataPlaneNetworkPolicyReconciler) Reconcile(ctx context.Context, seedNa
 	for _, ns := range desiredNamespaces {
 		desired := dataPlaneNetworkPolicy(ns)
 		obj := &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: desired.Name, Namespace: ns}}
-		if _, err := controllerutil.CreateOrUpdate(ctx, shootClient, obj, func() error {
+		_, err := controllerutil.CreateOrUpdate(ctx, shootClient, obj, func() error {
 			obj.Labels = desired.Labels
 			obj.Spec = desired.Spec
 
 			return nil
-		}); err != nil {
+		})
+		if err != nil {
 			return fmt.Errorf("failed to reconcile data-plane NetworkPolicy in namespace %q: %w", ns, err)
 		}
 	}
