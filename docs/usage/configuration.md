@@ -195,9 +195,52 @@ writes them directly into the `Gateway` namespaces (see
 [`manageDataPlaneNetworkPolicies`](#managedataplanenetworkpolicies) above).
 
 The Envoy Gateway control plane spawns one Envoy data-plane Deployment +
-LoadBalancer Service per user-created `Gateway`, in `kube-system`. The
-cloud-provider load-balancer controller provisions the underlying LB for each
-Service.
+LoadBalancer Service per user-created `Gateway`, **in the `Gateway`'s own
+namespace**. The cloud-provider load-balancer controller provisions the
+underlying LB for each Service.
+
+> [!NOTE]
+> The data plane runs in the `Gateway`'s namespace because the extension pins
+> Envoy Gateway to the `GatewayNamespace` deploy mode
+> (`provider.kubernetes.deploy.type`). Earlier extension versions used the
+> upstream default (`ControllerNamespace`), which placed every data-plane proxy
+> and its LoadBalancer Service in `kube-system` using the control plane's
+> privileged ServiceAccount — a confused-deputy escalation. See
+> [Migration: data plane moved out of `kube-system`](#migration-data-plane-moved-out-of-kube-system)
+> for what this means when upgrading an existing cluster.
+
+## Migration: data plane moved out of `kube-system`
+
+Extensions upgraded across the `GatewayNamespace` switch move each `Gateway`'s
+data-plane proxy `Deployment` and its LoadBalancer `Service` from `kube-system`
+into the `Gateway`'s own namespace. Envoy Gateway **recreates** the bundle in the
+new namespace but does **not** garbage-collect the old copies it left in
+`kube-system` — they were created directly by the controller (not via the
+extension's `ManagedResource`), so nothing owns them anymore. Left alone this
+would leave, per `Gateway`:
+
+- an idle proxy `Deployment` (dead pods), and
+- an orphaned `Service` of type `LoadBalancer` — which keeps a **cloud load
+  balancer provisioned and billing** even though no traffic reaches it.
+
+**The extension cleans this up automatically.** On every reconcile, right after
+deploying the control plane, it sweeps `kube-system` for objects that carry
+Envoy Gateway's `app.kubernetes.io/managed-by=envoy-gateway` label **and** a
+`gateway.envoyproxy.io/owning-gateway-name` label (i.e. per-`Gateway` data-plane
+infra: `Service`, `Deployment`, `ServiceAccount`, `ConfigMap`, and any
+`PodDisruptionBudget`/`HorizontalPodAutoscaler`) and deletes them. The
+control-plane objects the extension installs in `kube-system` carry **no**
+`owning-gateway-*` label, so the sweep never touches them. Deleting the orphaned
+`LoadBalancer` Service triggers the cloud-controller-manager to deprovision its
+LB, reclaiming the cost.
+
+The sweep is idempotent and best-effort: once the orphans are gone it is a no-op,
+it runs on the next reconcile after the new-namespace bundle exists, and a
+transient failure is logged and retried on the following reconcile rather than
+blocking reconciliation. No operator action is required — the cleanup happens the
+next time each shoot reconciles under the new version. To confirm it has run, see
+[Duplicate LoadBalancer / orphaned proxies in `kube-system` after upgrade](./troubleshooting.md#duplicate-loadbalancer--orphaned-proxies-in-kube-system-after-upgrade)
+in the troubleshooting guide.
 
 ## Validation
 
