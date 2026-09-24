@@ -15,7 +15,7 @@ problem.
 | Extension controller (reconciles the `Extension` on the seed) | Seed, in the shoot's control-plane namespace | `kubectl --context <seed> -n <shoot-namespace> logs -l app.kubernetes.io/name=gardener-extension-envoy-gateway -f` |
 | Admission webhook (validates `Shoot` objects) | Garden runtime cluster | `kubectl --context <runtime-garden> -n garden logs -l app.kubernetes.io/name=gardener-extension-admission-envoy-gateway -f` |
 | Envoy Gateway control plane (turns `Gateway`/`*Route` into xDS) | Shoot, `kube-system` namespace | `kubectl --context <shoot> -n kube-system logs -l app.kubernetes.io/name=envoy-gateway -f` |
-| Envoy data plane (per `Gateway`, actual traffic) | Shoot, `kube-system` namespace | `kubectl --context <shoot> -n kube-system logs -l gateway.envoyproxy.io/owning-gateway-name=<gateway-name> -f` |
+| Envoy data plane (per `Gateway`, actual traffic) | Shoot, the `Gateway`'s own namespace | `kubectl --context <shoot> -n <gateway-namespace> logs -l gateway.envoyproxy.io/owning-gateway-name=<gateway-name> -f` |
 
 The extension controller also emits Prometheus metrics on `/metrics` — see
 the operational metrics in `pkg/metrics/metrics.go`.
@@ -206,3 +206,43 @@ loosen the user policy or scope it to a different label selector.
 The extension logs `shoot is hibernated, skipping envoy-gateway deployment`
 and does nothing else. This is intentional — a hibernated shoot has no
 worker nodes to run pods on. The extension will resume on wake-up.
+
+## Duplicate LoadBalancer / orphaned proxies in `kube-system` after upgrade
+
+Symptoms after upgrading across the `GatewayNamespace` deploy-mode switch:
+
+- Two data-plane proxy bundles for the same `Gateway` — one in the `Gateway`'s
+  namespace (the new, working one) and a stale one in `kube-system`.
+- A cloud load balancer that no longer serves traffic but is still provisioned
+  (and billing).
+
+**Cause.** Earlier extension versions ran Envoy Gateway in the upstream default
+`ControllerNamespace` deploy mode, which placed every `Gateway`'s data-plane
+`Deployment` + LoadBalancer `Service` in `kube-system`. The extension now pins
+`GatewayNamespace` mode, so the bundle is recreated in the `Gateway`'s own
+namespace — but Envoy Gateway does not garbage-collect the `kube-system` copies
+across the mode change, and nothing else owns them. See
+[Migration: data plane moved out of `kube-system`](./configuration.md#migration-data-plane-moved-out-of-kube-system).
+
+**Fix.** No action needed — the extension sweeps these orphans automatically on
+each reconcile (see the migration note above). To force it, trigger a
+reconcile of the shoot (e.g. annotate the `Shoot` with
+`gardener.cloud/operation=reconcile`). List the orphans that remain:
+
+```
+kubectl --context <shoot> -n kube-system get deploy,svc,sa,cm,pdb,hpa \
+  -l app.kubernetes.io/managed-by=envoy-gateway \
+  -o custom-columns='KIND:.kind,NAME:.metadata.name,OWNER:.metadata.labels.gateway\.envoyproxy\.io/owning-gateway-name'
+```
+
+Rows with a non-`<none>` `OWNER` are the per-`Gateway` orphans the sweep
+deletes. Rows with `<none>` (the `envoy-gateway` control-plane
+Deployment/Service/ServiceAccount/ConfigMap) are **not** touched — that is the
+label boundary the sweep relies on. After a successful reconcile the
+non-`<none>` rows should be gone and the orphaned LB deprovisioned.
+
+If orphans persist after a reconcile, check the extension controller log for
+`failed to sweep orphaned data-plane resources from kube-system` — the sweep is
+best-effort and logs (rather than fails) on error, so a shoot API-server blip
+leaves the orphans for the next reconcile.
+

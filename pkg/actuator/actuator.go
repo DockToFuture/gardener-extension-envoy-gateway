@@ -58,6 +58,7 @@ type Actuator struct {
 
 	gatewayLister    GatewayLister
 	netpolReconciler DataPlaneNetworkPolicyReconciler
+	orphanSweeper    OrphanDataPlaneSweeper
 }
 
 var _ extension.Actuator = &Actuator{}
@@ -96,6 +97,10 @@ func New(c client.Client, imageVector imagevector.ImageVector, opts ...Option) (
 
 	if act.netpolReconciler == nil {
 		act.netpolReconciler = NewDataPlaneNetworkPolicyReconciler(c)
+	}
+
+	if act.orphanSweeper == nil {
+		act.orphanSweeper = NewOrphanDataPlaneSweeper(c)
 	}
 
 	return act, nil
@@ -142,6 +147,16 @@ func WithGatewayLister(l GatewayLister) Option {
 func WithDataPlaneNetworkPolicyReconciler(r DataPlaneNetworkPolicyReconciler) Option {
 	return func(a *Actuator) error {
 		a.netpolReconciler = r
+
+		return nil
+	}
+}
+
+// WithOrphanDataPlaneSweeper configures the [Actuator] with a custom
+// [OrphanDataPlaneSweeper].
+func WithOrphanDataPlaneSweeper(s OrphanDataPlaneSweeper) Option {
+	return func(a *Actuator) error {
+		a.orphanSweeper = s
 
 		return nil
 	}
@@ -244,6 +259,15 @@ func (a *Actuator) Reconcile(ctx context.Context, logger logr.Logger, ex *extens
 
 	if err := deployer.Deploy(ctx, clusterName, tlsBundle); err != nil {
 		return fmt.Errorf("failed to deploy envoy-gateway: %w", err)
+	}
+
+	// One-time migration cleanup: delete the per-Gateway data-plane proxy
+	// resources the pre-GatewayNamespace deploy mode orphaned in kube-system (a
+	// leftover LoadBalancer Service keeps a cloud LB billing). Best-effort: it
+	// retries on the next reconcile and must not block the functional deploy, so
+	// a failure is logged rather than returned.
+	if err := a.orphanSweeper.Sweep(ctx, logger, clusterName); err != nil {
+		logger.Error(err, "failed to sweep orphaned data-plane resources from kube-system; continuing", "cluster", clusterName)
 	}
 
 	// Reconcile the data-plane ingress NetworkPolicies against the shoot. The
