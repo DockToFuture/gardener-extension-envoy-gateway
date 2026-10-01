@@ -32,8 +32,18 @@ images:
 	return iv
 }
 
+// supportedConfig returns a DefaultConfig pinned to a Kubernetes version that
+// serves the admissionregistration.k8s.io/v1 ValidatingAdmissionPolicy API, so
+// the guard is emitted. Tests that assert the VAP is present use this.
+func supportedConfig() Config {
+	cfg := DefaultConfig()
+	cfg.ShootKubernetesVersion = "1.30.0"
+
+	return cfg
+}
+
 func TestGenerateResources_DefaultConfig(t *testing.T) {
-	d := NewDeployer(nil, logr.Discard(), DefaultConfig(), newTestImageVector(t))
+	d := NewDeployer(nil, logr.Discard(), supportedConfig(), newTestImageVector(t))
 	resources, err := d.GenerateResources()
 	if err != nil {
 		t.Fatalf("GenerateResources returned error: %v", err)
@@ -78,7 +88,7 @@ func TestConfigMap_HardcodesGatewayNamespaceDeployMode(t *testing.T) {
 }
 
 func TestGenerateResources_ShipsEnvoyProxyGuardVAP(t *testing.T) {
-	d := NewDeployer(nil, logr.Discard(), DefaultConfig(), newTestImageVector(t))
+	d := NewDeployer(nil, logr.Discard(), supportedConfig(), newTestImageVector(t))
 	resources, err := d.GenerateResources()
 	if err != nil {
 		t.Fatalf("GenerateResources returned error: %v", err)
@@ -101,6 +111,21 @@ func TestGenerateResources_ShipsEnvoyProxyGuardVAP(t *testing.T) {
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("expected VAP YAML to contain %q\n---\n%s", want, body)
+		}
+	}
+}
+
+func TestGenerateResources_SkipsEnvoyProxyGuardVAPOnOldKubernetes(t *testing.T) {
+	for _, version := range []string{"1.29.9", ""} {
+		cfg := DefaultConfig()
+		cfg.ShootKubernetesVersion = version
+		d := NewDeployer(nil, logr.Discard(), cfg, newTestImageVector(t))
+		resources, err := d.GenerateResources()
+		if err != nil {
+			t.Fatalf("GenerateResources(version=%q) returned error: %v", version, err)
+		}
+		if _, ok := resources["validatingadmissionpolicy.yaml"]; ok {
+			t.Errorf("expected VAP to be skipped for Kubernetes version %q, but it was generated", version)
 		}
 	}
 }

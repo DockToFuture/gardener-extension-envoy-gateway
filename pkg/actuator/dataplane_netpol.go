@@ -123,7 +123,10 @@ func managedDataPlanePolicyLabels() client.MatchingLabels {
 
 // dataPlaneNetworkPolicy returns the data-plane ingress NetworkPolicy for a
 // single Gateway namespace. It selects the Envoy data-plane proxy pods and
-// allows ingress on the data-plane ports.
+// allows ingress on the data-plane ports from anywhere: the extension does not
+// know a Gateway's load-balancer scope (internal vs. internet-facing is a
+// user-set Service annotation), and an internal-LB proxy is already unreachable
+// from outside at the network layer, so an empty from grants no extra exposure.
 func dataPlaneNetworkPolicy(namespace string) *networkingv1.NetworkPolicy {
 	tcp := corev1.ProtocolTCP
 

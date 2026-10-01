@@ -205,6 +205,7 @@ func (a *Actuator) Reconcile(ctx context.Context, logger logr.Logger, ex *extens
 	}
 
 	egConfig := envoygateway.DefaultConfig()
+	egConfig.ShootKubernetesVersion = cluster.Shoot.Spec.Kubernetes.Version
 	var manageDataPlaneNetworkPolicies bool
 	if ex.Spec.ProviderConfig != nil {
 		var cfg config.EnvoyGatewayConfig

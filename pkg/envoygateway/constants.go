@@ -7,10 +7,9 @@
 package envoygateway
 
 const (
-	// Namespace is the namespace where Envoy Gateway is deployed in the shoot.
-	// Must be one of the namespaces watched by the shoot's gardener-resource-manager
-	// (kube-system, kubernetes-dashboard, kube-node-lease) — otherwise applying the
-	// ManagedResource fails with "unknown namespace for the cache".
+	// Namespace is the namespace where the Envoy Gateway control plane is
+	// deployed in the shoot. It must be a namespace watched by the shoot's
+	// gardener-resource-manager so the ManagedResource can be applied.
 	Namespace = "kube-system"
 
 	// DeploymentName is the name of the Envoy Gateway control-plane Deployment.
