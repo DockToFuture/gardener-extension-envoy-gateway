@@ -1110,6 +1110,7 @@ func (d *Deployer) validatingAdmissionPolicySupported() bool {
 	atLeast130, err := versionutils.CompareVersions(d.config.ShootKubernetesVersion, ">=", "1.30")
 	if err != nil {
 		d.logger.Error(err, "failed to parse shoot Kubernetes version; skipping ValidatingAdmissionPolicy guard", "version", d.config.ShootKubernetesVersion)
+
 		return false
 	}
 
