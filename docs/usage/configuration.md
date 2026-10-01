@@ -110,11 +110,19 @@ Three ports are opened because they serve different callers on the ingress hop:
 The extension writes these policies directly to the shoot and owns their full
 lifecycle: a policy is created when a namespace gains its first `Gateway` and
 removed once the namespace no longer holds one, or when the feature is disabled.
-They cannot travel through the shoot `ManagedResource`, which reconciles only a
-fixed set of namespaces and so cannot reach arbitrary `Gateway` namespaces.
 
 Enable this only on shoots whose default-deny `NetworkPolicy` posture would
 otherwise block `Gateway` traffic.
+
+The ingress rule allows traffic from anywhere (`from` is left empty) rather than
+being scoped to the load balancer. The extension reconciles on the `Extension`
+resource and does not know a `Gateway`'s load-balancer scope — whether it is
+internet-facing or internal is a user-set Service annotation that varies per
+cloud provider and can change after the policy is written. A proxy that is only
+reachable through an internal load balancer is already unreachable from the
+internet at the network layer, so the wide `from` grants no additional exposure;
+narrowing it would add provider-specific Service bookkeeping without closing a
+reachable path.
 
 > **Scope — this covers only the *ingress* hop to the proxies.** A request to a
 > `Gateway` traverses three hops, and on a default-deny namespace each must be

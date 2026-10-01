@@ -19,6 +19,7 @@ import (
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/utils/imagevector"
 	"github.com/gardener/gardener/pkg/utils/managedresources"
+	versionutils "github.com/gardener/gardener/pkg/utils/version"
 	"github.com/go-logr/logr"
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -102,6 +103,12 @@ type Config struct {
 	ManageCRDs bool
 	// EnvoyProxyDefaults are opinionated defaults applied per-Gateway.
 	EnvoyProxyDefaults *config.EnvoyProxyDefaults
+	// ShootKubernetesVersion is the shoot's Kubernetes version (e.g. "1.30.2").
+	// It gates resources that are not available on every supported release, such
+	// as the ValidatingAdmissionPolicy guard, which requires the
+	// admissionregistration.k8s.io/v1 API that is only served from 1.30 onwards.
+	// Empty means "unknown", in which case version-gated resources are skipped.
+	ShootKubernetesVersion string
 }
 
 // DefaultConfig returns the default configuration.
@@ -283,13 +290,20 @@ func (d *Deployer) buildResources(tls TLSBundle) (map[string][]byte, error) {
 	resources["envoyproxy-defaults.yaml"] = []byte(d.envoyProxyDefaultsYAML())
 
 	// The ValidatingAdmissionPolicy and its binding are two objects delivered in
-	// one manifest.
-	policy, binding := envoyProxyGuard()
-	vap, err := encodeObjects(policy, binding)
-	if err != nil {
-		return nil, err
+	// one manifest. They are defense-in-depth on top of GatewayNamespace mode and
+	// require the admissionregistration.k8s.io/v1 ValidatingAdmissionPolicy API,
+	// which is only served from Kubernetes 1.30. On older shoots the kinds do not
+	// exist and applying the manifest would fail, so the guard is skipped there.
+	if d.validatingAdmissionPolicySupported() {
+		policy, binding := envoyProxyGuard()
+		vap, err := encodeObjects(policy, binding)
+		if err != nil {
+			return nil, err
+		}
+		resources["validatingadmissionpolicy.yaml"] = vap
+	} else {
+		d.logger.Info("skipping EnvoyProxy ValidatingAdmissionPolicy guard: shoot Kubernetes version does not serve admissionregistration.k8s.io/v1 ValidatingAdmissionPolicy (requires >= 1.30)", "version", d.config.ShootKubernetesVersion)
 	}
-	resources["validatingadmissionpolicy.yaml"] = vap
 
 	if d.config.ManageCRDs {
 		d.addCRDs(resources)
@@ -1083,6 +1097,23 @@ func indentYAML(s string, n int, header string) string {
 	}
 
 	return b.String()
+}
+
+// validatingAdmissionPolicySupported reports whether the shoot's Kubernetes
+// version serves the admissionregistration.k8s.io/v1 ValidatingAdmissionPolicy
+// API, which went GA in 1.30. An empty or unparseable version is treated as
+// unsupported so the guard is skipped rather than risking a failed apply.
+func (d *Deployer) validatingAdmissionPolicySupported() bool {
+	if d.config.ShootKubernetesVersion == "" {
+		return false
+	}
+	atLeast130, err := versionutils.CompareVersions(d.config.ShootKubernetesVersion, ">=", "1.30")
+	if err != nil {
+		d.logger.Error(err, "failed to parse shoot Kubernetes version; skipping ValidatingAdmissionPolicy guard", "version", d.config.ShootKubernetesVersion)
+		return false
+	}
+
+	return atLeast130
 }
 
 // envoyProxyGuard returns the ValidatingAdmissionPolicy and its binding that
