@@ -108,31 +108,36 @@ func ProxyEgressPolicy(gatewayNamespace string, backends []BackendTarget) *netwo
 	tcp := corev1.ProtocolTCP
 	dnsPort := ptrIntStr(DataPlaneDNSPort)
 
-	egress := []networkingv1.NetworkPolicyEgressRule{{
-		// DNS resolution to any namespace (kube-dns / node-local DNS).
-		To: []networkingv1.NetworkPolicyPeer{{NamespaceSelector: &metav1.LabelSelector{}}},
-		Ports: []networkingv1.NetworkPolicyPort{
-			{Protocol: &udp, Port: dnsPort},
-			{Protocol: &tcp, Port: dnsPort},
+	// Two fixed rules (DNS + xDS) plus one per backend.
+	egress := make([]networkingv1.NetworkPolicyEgressRule, 0, 2+len(backends))
+	egress = append(egress,
+		networkingv1.NetworkPolicyEgressRule{
+			// DNS resolution to any namespace (kube-dns / node-local DNS).
+			To: []networkingv1.NetworkPolicyPeer{{NamespaceSelector: &metav1.LabelSelector{}}},
+			Ports: []networkingv1.NetworkPolicyPort{
+				{Protocol: &udp, Port: dnsPort},
+				{Protocol: &tcp, Port: dnsPort},
+			},
 		},
-	}, {
-		// xDS: the proxy pulls its listener/cluster config from the Envoy Gateway
-		// control-plane pod in kube-system. Without this, the gRPC xDS stream
-		// times out, the proxy never programs a listener, and its readiness port
-		// (19003) never opens, so the pod stays NotReady. The control plane's own
-		// ingress policy allows this connection in (see Deployer.networkPolicy);
-		// both sides are required under a default-deny posture.
-		To: []networkingv1.NetworkPolicyPeer{{
-			NamespaceSelector: namespaceByName(Namespace),
-			PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
-				LabelName:     DeploymentName,
-				LabelInstance: DeploymentName,
+		networkingv1.NetworkPolicyEgressRule{
+			// xDS: the proxy pulls its listener/cluster config from the Envoy Gateway
+			// control-plane pod in kube-system. Without this, the gRPC xDS stream
+			// times out, the proxy never programs a listener, and its readiness port
+			// (19003) never opens, so the pod stays NotReady. The control plane's own
+			// ingress policy allows this connection in (see Deployer.networkPolicy);
+			// both sides are required under a default-deny posture.
+			To: []networkingv1.NetworkPolicyPeer{{
+				NamespaceSelector: namespaceByName(Namespace),
+				PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
+					LabelName:     DeploymentName,
+					LabelInstance: DeploymentName,
+				}},
 			}},
-		}},
-		Ports: []networkingv1.NetworkPolicyPort{
-			{Protocol: &tcp, Port: ptrIntStr(XDSPort)},
+			Ports: []networkingv1.NetworkPolicyPort{
+				{Protocol: &tcp, Port: ptrIntStr(XDSPort)},
+			},
 		},
-	}}
+	)
 
 	for _, b := range backends {
 		peer := networkingv1.NetworkPolicyPeer{
@@ -181,7 +186,7 @@ func BackendIngressPolicy(backendNamespace, gatewayNamespace string, podSelector
 			Ingress: []networkingv1.NetworkPolicyIngressRule{{
 				From: []networkingv1.NetworkPolicyPeer{{
 					NamespaceSelector: namespaceByName(gatewayNamespace),
-					PodSelector:       ptrLabelSelector(proxyPodSelector()),
+					PodSelector:       new(proxyPodSelector()),
 				}},
 			}},
 		},
@@ -222,11 +227,6 @@ func StalePolicies(existing []networkingv1.NetworkPolicy, desired []client.Objec
 // with the given name via the well-known metadata.name label.
 func namespaceByName(name string) *metav1.LabelSelector {
 	return &metav1.LabelSelector{MatchLabels: map[string]string{MetadataNameLabel: name}}
-}
-
-// ptrLabelSelector returns a pointer to a copy of the given label selector.
-func ptrLabelSelector(s metav1.LabelSelector) *metav1.LabelSelector {
-	return &s
 }
 
 // ptrIntStr returns a pointer to an IntOrString holding the given int.

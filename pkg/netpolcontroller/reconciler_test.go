@@ -36,27 +36,24 @@ func reconcilerTestScheme(t *testing.T) *runtime.Scheme {
 	return s
 }
 
-func managedGateway(name, namespace string) *gatewayv1.Gateway {
+func managedGateway() *gatewayv1.Gateway {
 	return &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: "gw", Namespace: testNsGateway},
 		Spec:       gatewayv1.GatewaySpec{GatewayClassName: envoygateway.GatewayClassName},
 	}
 }
 
-func httpRoute(name, namespace, parentNs, backendName string, backendNs *string) *gatewayv1.HTTPRoute {
+func httpRoute(backendName string, backendNs *string) *gatewayv1.HTTPRoute {
 	parent := gatewayv1.ParentReference{Name: gatewayv1.ObjectName("gw")}
-	if parentNs != "" {
-		parent.Namespace = nsPtr(parentNs)
-	}
 	ref := gatewayv1.HTTPBackendRef{BackendRef: gatewayv1.BackendRef{
 		BackendObjectReference: gatewayv1.BackendObjectReference{Name: gatewayv1.ObjectName(backendName)},
 	}}
 	if backendNs != nil {
-		ref.BackendRef.BackendObjectReference.Namespace = nsPtr(*backendNs)
+		ref.Namespace = nsPtr(*backendNs)
 	}
 
 	return &gatewayv1.HTTPRoute{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: "route", Namespace: testNsGateway},
 		Spec: gatewayv1.HTTPRouteSpec{
 			CommonRouteSpec: gatewayv1.CommonRouteSpec{ParentRefs: []gatewayv1.ParentReference{parent}},
 			Rules:           []gatewayv1.HTTPRouteRule{{BackendRefs: []gatewayv1.HTTPBackendRef{ref}}},
@@ -89,23 +86,23 @@ func getPolicy(t *testing.T, cl client.Client, namespace, name string) *networki
 func TestReconcileSameNamespaceBackend(t *testing.T) {
 	scheme := reconcilerTestScheme(t)
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
-		managedGateway("gw", "gw-ns"),
-		httpRoute("route", "gw-ns", "", "backend", nil),
-		selectorService("backend", "gw-ns", map[string]string{"app": "backend"}),
+		managedGateway(),
+		httpRoute(testBackendName, nil),
+		selectorService(testBackendName, testNsGateway, map[string]string{testAppLabel: testBackendName}),
 	).Build()
 
 	r := &Reconciler{ShootClient: cl}
-	if _, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: nsName("gw-ns")}); err != nil {
+	if _, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: nsName()}); err != nil {
 		t.Fatalf("reconcile failed: %v", err)
 	}
 
 	// Hop 1 (ingress) in the Gateway namespace.
-	if np := getPolicy(t, cl, "gw-ns", envoygateway.DataPlaneNetworkPolicyName); np == nil {
+	if np := getPolicy(t, cl, testNsGateway, envoygateway.DataPlaneNetworkPolicyName); np == nil {
 		t.Fatal("hop-1 proxy ingress policy was not created")
 	}
 
 	// Hop 2 (egress) in the Gateway namespace: DNS + xDS + one backend rule.
-	egress := getPolicy(t, cl, "gw-ns", envoygateway.ProxyEgressNetworkPolicyName)
+	egress := getPolicy(t, cl, testNsGateway, envoygateway.ProxyEgressNetworkPolicyName)
 	if egress == nil {
 		t.Fatal("hop-2 proxy egress policy was not created")
 	}
@@ -114,59 +111,61 @@ func TestReconcileSameNamespaceBackend(t *testing.T) {
 	}
 
 	// Hop 3 (ingress) in the backend namespace (== Gateway namespace here).
-	hop3Name := envoygateway.BackendIngressPolicyName("gw-ns")
-	hop3 := getPolicy(t, cl, "gw-ns", hop3Name)
+	hop3Name := envoygateway.BackendIngressPolicyName(testNsGateway)
+	hop3 := getPolicy(t, cl, testNsGateway, hop3Name)
 	if hop3 == nil {
 		t.Fatal("hop-3 backend ingress policy was not created")
 	}
-	if got := hop3.Spec.PodSelector.MatchLabels["app"]; got != "backend" {
+	if got := hop3.Spec.PodSelector.MatchLabels[testAppLabel]; got != testBackendName {
 		t.Fatalf("hop-3 podSelector = %v, want app=backend", hop3.Spec.PodSelector.MatchLabels)
 	}
 }
 
 func TestReconcileCrossNamespaceBackendRequiresGrant(t *testing.T) {
 	scheme := reconcilerTestScheme(t)
-	backendNs := "team-b"
+	backendNs := testNsTeamB
 
 	build := func(objs ...client.Object) client.Client {
 		return fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
 	}
 
-	baseObjs := []client.Object{
-		managedGateway("gw", "gw-ns"),
-		httpRoute("route", "gw-ns", "", "backend", &backendNs),
-		selectorService("backend", backendNs, map[string]string{"app": "backend"}),
-	}
+	// Capacity 4: three base objects plus the ReferenceGrant appended below.
+	baseObjs := make([]client.Object, 0, 4)
+	baseObjs = append(baseObjs,
+		managedGateway(),
+		httpRoute(testBackendName, &backendNs),
+		selectorService(testBackendName, backendNs, map[string]string{testAppLabel: testBackendName}),
+	)
 
 	// Without a ReferenceGrant the cross-namespace backend is skipped: no hop-3
 	// policy, and hop-2 has only the DNS and xDS rules (no backend rule).
 	cl := build(baseObjs...)
 	r := &Reconciler{ShootClient: cl}
-	if _, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: nsName("gw-ns")}); err != nil {
+	if _, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: nsName()}); err != nil {
 		t.Fatalf("reconcile failed: %v", err)
 	}
-	if np := getPolicy(t, cl, backendNs, envoygateway.BackendIngressPolicyName("gw-ns")); np != nil {
+	if np := getPolicy(t, cl, backendNs, envoygateway.BackendIngressPolicyName(testNsGateway)); np != nil {
 		t.Fatal("hop-3 policy must not be created without a ReferenceGrant")
 	}
-	egress := getPolicy(t, cl, "gw-ns", envoygateway.ProxyEgressNetworkPolicyName)
+	egress := getPolicy(t, cl, testNsGateway, envoygateway.ProxyEgressNetworkPolicyName)
 	if egress == nil || len(egress.Spec.Egress) != 2 {
 		t.Fatalf("expected hop-2 to carry only the DNS + xDS rules, got %+v", egress)
 	}
 
 	// With a matching ReferenceGrant the backend resolves.
 	grant := &gatewayv1.ReferenceGrant{
-		ObjectMeta: metav1.ObjectMeta{Name: "grant", Namespace: backendNs},
+		ObjectMeta: metav1.ObjectMeta{Name: testGrantName, Namespace: backendNs},
 		Spec: gatewayv1.ReferenceGrantSpec{
-			From: []gatewayv1.ReferenceGrantFrom{{Group: envoygateway.APIGroupGatewayAPI, Kind: "HTTPRoute", Namespace: "gw-ns"}},
+			From: []gatewayv1.ReferenceGrantFrom{{Group: envoygateway.APIGroupGatewayAPI, Kind: testKindHTTPRoute, Namespace: testNsGateway}},
 			To:   []gatewayv1.ReferenceGrantTo{{Group: "", Kind: "Service"}},
 		},
 	}
 	cl = build(append(baseObjs, grant)...)
 	r = &Reconciler{ShootClient: cl}
-	if _, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: nsName("gw-ns")}); err != nil {
+	if _, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: nsName()}); err != nil {
 		t.Fatalf("reconcile failed: %v", err)
 	}
-	if np := getPolicy(t, cl, backendNs, envoygateway.BackendIngressPolicyName("gw-ns")); np == nil {
+	if np := getPolicy(t, cl, backendNs, envoygateway.BackendIngressPolicyName(testNsGateway)); np == nil {
 		t.Fatal("hop-3 policy must be created once a ReferenceGrant permits the backend")
 	}
 }
@@ -176,24 +175,24 @@ func TestReconcilePrunesNamespaceWithoutGateway(t *testing.T) {
 
 	// Pre-seed all three hops as if a Gateway previously existed, but no Gateway
 	// object now lives in gw-ns.
-	hop1 := envoygateway.DataPlaneProxyIngressPolicy("gw-ns")
-	hop2 := envoygateway.ProxyEgressPolicy("gw-ns", nil)
-	hop3 := envoygateway.BackendIngressPolicy("backend-ns", "gw-ns", map[string]string{"app": "backend"})
+	hop1 := envoygateway.DataPlaneProxyIngressPolicy(testNsGateway)
+	hop2 := envoygateway.ProxyEgressPolicy(testNsGateway, nil)
+	hop3 := envoygateway.BackendIngressPolicy(testNsBackend, testNsGateway, map[string]string{testAppLabel: testBackendName})
 
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(hop1, hop2, hop3).Build()
 	r := &Reconciler{ShootClient: cl}
 
-	if _, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: nsName("gw-ns")}); err != nil {
+	if _, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: nsName()}); err != nil {
 		t.Fatalf("reconcile failed: %v", err)
 	}
 
-	if np := getPolicy(t, cl, "gw-ns", envoygateway.DataPlaneNetworkPolicyName); np != nil {
+	if np := getPolicy(t, cl, testNsGateway, envoygateway.DataPlaneNetworkPolicyName); np != nil {
 		t.Error("hop-1 policy should have been pruned")
 	}
-	if np := getPolicy(t, cl, "gw-ns", envoygateway.ProxyEgressNetworkPolicyName); np != nil {
+	if np := getPolicy(t, cl, testNsGateway, envoygateway.ProxyEgressNetworkPolicyName); np != nil {
 		t.Error("hop-2 policy should have been pruned")
 	}
-	if np := getPolicy(t, cl, "backend-ns", envoygateway.BackendIngressPolicyName("gw-ns")); np != nil {
+	if np := getPolicy(t, cl, testNsBackend, envoygateway.BackendIngressPolicyName(testNsGateway)); np != nil {
 		t.Error("hop-3 policy should have been pruned")
 	}
 }
@@ -201,31 +200,31 @@ func TestReconcilePrunesNamespaceWithoutGateway(t *testing.T) {
 func TestReconcileSelfHealRecreatesDeletedPolicy(t *testing.T) {
 	scheme := reconcilerTestScheme(t)
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
-		managedGateway("gw", "gw-ns"),
-		httpRoute("route", "gw-ns", "", "backend", nil),
-		selectorService("backend", "gw-ns", map[string]string{"app": "backend"}),
+		managedGateway(),
+		httpRoute(testBackendName, nil),
+		selectorService(testBackendName, testNsGateway, map[string]string{testAppLabel: testBackendName}),
 	).Build()
 
 	r := &Reconciler{ShootClient: cl}
 	ctx := context.Background()
 
-	if _, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: nsName("gw-ns")}); err != nil {
+	if _, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: nsName()}); err != nil {
 		t.Fatalf("initial reconcile failed: %v", err)
 	}
 
 	// A user deletes the hop-1 policy. A second reconcile (what the self-heal
 	// watch triggers) must recreate it.
-	if err := cl.Delete(ctx, getPolicy(t, cl, "gw-ns", envoygateway.DataPlaneNetworkPolicyName)); err != nil {
+	if err := cl.Delete(ctx, getPolicy(t, cl, testNsGateway, envoygateway.DataPlaneNetworkPolicyName)); err != nil {
 		t.Fatalf("failed to delete hop-1 policy: %v", err)
 	}
-	if np := getPolicy(t, cl, "gw-ns", envoygateway.DataPlaneNetworkPolicyName); np != nil {
+	if np := getPolicy(t, cl, testNsGateway, envoygateway.DataPlaneNetworkPolicyName); np != nil {
 		t.Fatal("precondition: hop-1 policy should be gone before the self-heal reconcile")
 	}
 
-	if _, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: nsName("gw-ns")}); err != nil {
+	if _, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: nsName()}); err != nil {
 		t.Fatalf("self-heal reconcile failed: %v", err)
 	}
-	if np := getPolicy(t, cl, "gw-ns", envoygateway.DataPlaneNetworkPolicyName); np == nil {
+	if np := getPolicy(t, cl, testNsGateway, envoygateway.DataPlaneNetworkPolicyName); np == nil {
 		t.Fatal("hop-1 policy was not recreated by the self-heal reconcile")
 	}
 }
@@ -233,27 +232,27 @@ func TestReconcileSelfHealRecreatesDeletedPolicy(t *testing.T) {
 func TestReconcilePrunesStaleBackendOnRouteChange(t *testing.T) {
 	scheme := reconcilerTestScheme(t)
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
-		managedGateway("gw", "gw-ns"),
-		httpRoute("route", "gw-ns", "", "backend-a", nil),
-		selectorService("backend-a", "gw-ns", map[string]string{"app": "a"}),
-		selectorService("backend-b", "gw-ns", map[string]string{"app": "b"}),
+		managedGateway(),
+		httpRoute("backend-a", nil),
+		selectorService("backend-a", testNsGateway, map[string]string{testAppLabel: "a"}),
+		selectorService("backend-b", testNsGateway, map[string]string{testAppLabel: "b"}),
 	).Build()
 
 	r := &Reconciler{ShootClient: cl}
 	ctx := context.Background()
 
-	if _, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: nsName("gw-ns")}); err != nil {
+	if _, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: nsName()}); err != nil {
 		t.Fatalf("reconcile failed: %v", err)
 	}
 	// Only one hop-3 policy name exists per Gateway namespace; it must be present.
-	if np := getPolicy(t, cl, "gw-ns", envoygateway.BackendIngressPolicyName("gw-ns")); np == nil {
+	if np := getPolicy(t, cl, testNsGateway, envoygateway.BackendIngressPolicyName(testNsGateway)); np == nil {
 		t.Fatal("hop-3 policy for the single backend should exist")
 	}
 
 	// Repoint the route at a backend with no selector service removed — simulate
 	// the route losing all backends; hop-3 must be pruned.
 	rt := &gatewayv1.HTTPRoute{}
-	if err := cl.Get(ctx, client.ObjectKey{Namespace: "gw-ns", Name: "route"}, rt); err != nil {
+	if err := cl.Get(ctx, client.ObjectKey{Namespace: testNsGateway, Name: "route"}, rt); err != nil {
 		t.Fatalf("failed to get route: %v", err)
 	}
 	rt.Spec.Rules = nil
@@ -261,14 +260,14 @@ func TestReconcilePrunesStaleBackendOnRouteChange(t *testing.T) {
 		t.Fatalf("failed to update route: %v", err)
 	}
 
-	if _, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: nsName("gw-ns")}); err != nil {
+	if _, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: nsName()}); err != nil {
 		t.Fatalf("second reconcile failed: %v", err)
 	}
-	if np := getPolicy(t, cl, "gw-ns", envoygateway.BackendIngressPolicyName("gw-ns")); np != nil {
+	if np := getPolicy(t, cl, testNsGateway, envoygateway.BackendIngressPolicyName(testNsGateway)); np != nil {
 		t.Fatal("hop-3 policy should have been pruned after the route lost its backend")
 	}
 }
 
-func nsName(namespace string) types.NamespacedName {
-	return types.NamespacedName{Namespace: namespace}
+func nsName() types.NamespacedName {
+	return types.NamespacedName{Namespace: testNsGateway}
 }

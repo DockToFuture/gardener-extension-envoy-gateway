@@ -88,10 +88,12 @@ const (
 	// network hops a managed NetworkPolicy belongs to. It scopes the prune List
 	// so each hop's reconciliation only removes its own stale policies.
 	LabelHop = "envoy-gateway.extensions.gardener.cloud/hop"
-	// HopProxyIngress, HopProxyEgress, and HopBackendIngress are the [LabelHop]
-	// values for the three managed data-plane hops.
-	HopProxyIngress   = "proxy-ingress"
-	HopProxyEgress    = "proxy-egress"
+
+	// HopProxyIngress is the [LabelHop] value for the client→proxy hop.
+	HopProxyIngress = "proxy-ingress"
+	// HopProxyEgress is the [LabelHop] value for the proxy→backend/control-plane hop.
+	HopProxyEgress = "proxy-egress"
+	// HopBackendIngress is the [LabelHop] value for the proxy→backend ingress hop.
 	HopBackendIngress = "backend-ingress"
 
 	// DataPlaneDNSPort is the DNS port the proxy egress policy opens (UDP+TCP)
@@ -148,6 +150,12 @@ const (
 	kindSecret = "Secret"
 	// apiVersionRBAC is the RBAC API version used by the deployer.
 	apiVersionRBAC = "rbac.authorization.k8s.io/v1"
+	// apiGroupRBAC is the RBAC API group used by the deployer.
+	apiGroupRBAC = "rbac.authorization.k8s.io"
+	// kindClusterRole is the Kubernetes Kind name for ClusterRole.
+	kindClusterRole = "ClusterRole"
+	// kindClusterRoleBinding is the Kubernetes Kind name for ClusterRoleBinding.
+	kindClusterRoleBinding = "ClusterRoleBinding"
 
 	// APIGroupGatewayAPI is the Gateway API resource group.
 	APIGroupGatewayAPI = "gateway.networking.k8s.io"

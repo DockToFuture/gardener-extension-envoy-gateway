@@ -6,7 +6,7 @@ package netpolcontroller
 
 import (
 	"context"
-	"sort"
+	"slices"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -29,7 +29,7 @@ func requestNamespaces(reqs []reconcile.Request) []string {
 	for _, r := range reqs {
 		out = append(out, r.Namespace)
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 
 	return out
 }
@@ -56,37 +56,37 @@ func TestParentNamespaces(t *testing.T) {
 		{
 			name:       "unset namespace defaults to route namespace",
 			parentRefs: []gatewayv1.ParentReference{{Name: "gw"}},
-			routeNs:    "team-a",
-			want:       []string{"team-a"},
+			routeNs:    testNsTeamA,
+			want:       []string{testNsTeamA},
 		},
 		{
 			name:       "explicit namespace wins",
-			parentRefs: []gatewayv1.ParentReference{{Name: "gw", Namespace: nsPtr("gw-ns")}},
-			routeNs:    "team-a",
-			want:       []string{"gw-ns"},
+			parentRefs: []gatewayv1.ParentReference{{Name: "gw", Namespace: nsPtr(testNsGateway)}},
+			routeNs:    testNsTeamA,
+			want:       []string{testNsGateway},
 		},
 		{
 			name: "non-Gateway parent is ignored",
 			parentRefs: []gatewayv1.ParentReference{
 				{Name: "svc", Kind: kindPtr("Service")},
-				{Name: "gw", Namespace: nsPtr("gw-ns")},
+				{Name: "gw", Namespace: nsPtr(testNsGateway)},
 			},
-			routeNs: "team-a",
-			want:    []string{"gw-ns"},
+			routeNs: testNsTeamA,
+			want:    []string{testNsGateway},
 		},
 		{
 			name: "duplicate namespaces are deduplicated",
 			parentRefs: []gatewayv1.ParentReference{
-				{Name: "gw1", Namespace: nsPtr("gw-ns")},
-				{Name: "gw2", Namespace: nsPtr("gw-ns")},
+				{Name: "gw1", Namespace: nsPtr(testNsGateway)},
+				{Name: "gw2", Namespace: nsPtr(testNsGateway)},
 			},
-			routeNs: "team-a",
-			want:    []string{"gw-ns"},
+			routeNs: testNsTeamA,
+			want:    []string{testNsGateway},
 		},
 		{
 			name:       "no parentRefs yields no requests",
 			parentRefs: nil,
-			routeNs:    "team-a",
+			routeNs:    testNsTeamA,
 			want:       []string{},
 		},
 	}
@@ -112,29 +112,29 @@ func TestRouteAttachesToNamespace(t *testing.T) {
 		{
 			name:       "same-namespace attachment",
 			parentRefs: []gatewayv1.ParentReference{{Name: "gw"}},
-			routeNs:    "team-a",
-			gatewayNs:  "team-a",
+			routeNs:    testNsTeamA,
+			gatewayNs:  testNsTeamA,
 			want:       true,
 		},
 		{
 			name:       "cross-namespace attachment",
-			parentRefs: []gatewayv1.ParentReference{{Name: "gw", Namespace: nsPtr("gw-ns")}},
-			routeNs:    "team-a",
-			gatewayNs:  "gw-ns",
+			parentRefs: []gatewayv1.ParentReference{{Name: "gw", Namespace: nsPtr(testNsGateway)}},
+			routeNs:    testNsTeamA,
+			gatewayNs:  testNsGateway,
 			want:       true,
 		},
 		{
 			name:       "no attachment to the queried namespace",
-			parentRefs: []gatewayv1.ParentReference{{Name: "gw", Namespace: nsPtr("other")}},
-			routeNs:    "team-a",
-			gatewayNs:  "gw-ns",
+			parentRefs: []gatewayv1.ParentReference{{Name: "gw", Namespace: nsPtr(testNsOther)}},
+			routeNs:    testNsTeamA,
+			gatewayNs:  testNsGateway,
 			want:       false,
 		},
 		{
 			name:       "non-Gateway parent does not attach",
 			parentRefs: []gatewayv1.ParentReference{{Name: "svc", Kind: kindPtr("Service")}},
-			routeNs:    "team-a",
-			gatewayNs:  "team-a",
+			routeNs:    testNsTeamA,
+			gatewayNs:  testNsTeamA,
 			want:       false,
 		},
 	}
@@ -152,23 +152,23 @@ func TestMapServiceToRequests(t *testing.T) {
 	scheme := watchesTestScheme(t)
 
 	managedGw := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{Name: "gw", Namespace: "gw-ns"},
+		ObjectMeta: metav1.ObjectMeta{Name: "gw", Namespace: testNsGateway},
 		Spec:       gatewayv1.GatewaySpec{GatewayClassName: envoygateway.GatewayClassName},
 	}
 	foreignGw := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{Name: "other", Namespace: "other-ns"},
+		ObjectMeta: metav1.ObjectMeta{Name: testNsOther, Namespace: "other-ns"},
 		Spec:       gatewayv1.GatewaySpec{GatewayClassName: "some-other-class"},
 	}
 
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(managedGw, foreignGw).Build()
 	r := &Reconciler{ShootClient: cl}
 
-	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "backend", Namespace: "team-a"}}
+	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: testBackendName, Namespace: testNsTeamA}}
 	got := requestNamespaces(r.mapServiceToRequests(context.Background(), svc))
 
 	// Own namespace plus every managed Gateway namespace; the foreign-class
 	// Gateway namespace must not appear.
-	want := []string{"gw-ns", "team-a"}
+	want := []string{testNsGateway, testNsTeamA}
 	if !equalStrings(got, want) {
 		t.Fatalf("mapServiceToRequests() = %v, want %v", got, want)
 	}
@@ -177,18 +177,18 @@ func TestMapServiceToRequests(t *testing.T) {
 func TestMapReferenceGrantToRequests(t *testing.T) {
 	r := &Reconciler{}
 	rg := &gatewayv1.ReferenceGrant{
-		ObjectMeta: metav1.ObjectMeta{Name: "grant", Namespace: "backend-ns"},
+		ObjectMeta: metav1.ObjectMeta{Name: testGrantName, Namespace: testNsBackend},
 		Spec: gatewayv1.ReferenceGrantSpec{
 			From: []gatewayv1.ReferenceGrantFrom{
-				{Group: envoygateway.APIGroupGatewayAPI, Kind: "HTTPRoute", Namespace: "gw-ns"},
-				{Group: envoygateway.APIGroupGatewayAPI, Kind: "GRPCRoute", Namespace: "gw-ns"},
-				{Group: envoygateway.APIGroupGatewayAPI, Kind: "HTTPRoute", Namespace: "team-b"},
+				{Group: envoygateway.APIGroupGatewayAPI, Kind: testKindHTTPRoute, Namespace: testNsGateway},
+				{Group: envoygateway.APIGroupGatewayAPI, Kind: "GRPCRoute", Namespace: testNsGateway},
+				{Group: envoygateway.APIGroupGatewayAPI, Kind: testKindHTTPRoute, Namespace: testNsTeamB},
 			},
 		},
 	}
 
 	got := requestNamespaces(r.mapReferenceGrantToRequests(context.Background(), rg))
-	want := []string{"gw-ns", "team-b"}
+	want := []string{testNsGateway, testNsTeamB}
 	if !equalStrings(got, want) {
 		t.Fatalf("mapReferenceGrantToRequests() = %v, want %v", got, want)
 	}
@@ -204,46 +204,46 @@ func TestMapManagedPolicyToRequests(t *testing.T) {
 			name: "hop-1 proxy ingress maps to its own namespace",
 			policy: &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{
 				Name:      envoygateway.DataPlaneNetworkPolicyName,
-				Namespace: "gw-ns",
+				Namespace: testNsGateway,
 				Labels:    map[string]string{envoygateway.LabelHop: envoygateway.HopProxyIngress},
 			}},
-			want: []string{"gw-ns"},
+			want: []string{testNsGateway},
 		},
 		{
 			name: "hop-2 proxy egress maps to its own namespace",
 			policy: &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{
 				Name:      envoygateway.ProxyEgressNetworkPolicyName,
-				Namespace: "gw-ns",
+				Namespace: testNsGateway,
 				Labels:    map[string]string{envoygateway.LabelHop: envoygateway.HopProxyEgress},
 			}},
-			want: []string{"gw-ns"},
+			want: []string{testNsGateway},
 		},
 		{
 			name: "hop-3 backend ingress maps back to the Gateway namespace from its ingress peer",
 			policy: &networkingv1.NetworkPolicy{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      envoygateway.BackendIngressPolicyName("gw-ns"),
-					Namespace: "backend-ns",
+					Name:      envoygateway.BackendIngressPolicyName(testNsGateway),
+					Namespace: testNsBackend,
 					Labels:    map[string]string{envoygateway.LabelHop: envoygateway.HopBackendIngress},
 				},
 				Spec: networkingv1.NetworkPolicySpec{
 					Ingress: []networkingv1.NetworkPolicyIngressRule{{
 						From: []networkingv1.NetworkPolicyPeer{{
 							NamespaceSelector: &metav1.LabelSelector{
-								MatchLabels: map[string]string{envoygateway.MetadataNameLabel: "gw-ns"},
+								MatchLabels: map[string]string{envoygateway.MetadataNameLabel: testNsGateway},
 							},
 						}},
 					}},
 				},
 			},
-			want: []string{"gw-ns"},
+			want: []string{testNsGateway},
 		},
 		{
 			name: "hop-3 without a namespace-named peer yields nothing",
 			policy: &networkingv1.NetworkPolicy{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      envoygateway.BackendIngressPolicyName("gw-ns"),
-					Namespace: "backend-ns",
+					Name:      envoygateway.BackendIngressPolicyName(testNsGateway),
+					Namespace: testNsBackend,
 					Labels:    map[string]string{envoygateway.LabelHop: envoygateway.HopBackendIngress},
 				},
 			},
@@ -265,7 +265,7 @@ func TestManagedGatewayPredicate(t *testing.T) {
 	p := managedGatewayPredicate()
 
 	managed := &gatewayv1.Gateway{Spec: gatewayv1.GatewaySpec{GatewayClassName: envoygateway.GatewayClassName}}
-	foreign := &gatewayv1.Gateway{Spec: gatewayv1.GatewaySpec{GatewayClassName: "other"}}
+	foreign := &gatewayv1.Gateway{Spec: gatewayv1.GatewaySpec{GatewayClassName: testNsOther}}
 
 	if !p.Create(event.TypedCreateEvent[*gatewayv1.Gateway]{Object: managed}) {
 		t.Error("managed Gateway create should pass")
@@ -288,9 +288,9 @@ func TestServiceSelectorChangedPredicate(t *testing.T) {
 		t.Error("service delete should always pass")
 	}
 
-	oldSvc := &corev1.Service{Spec: corev1.ServiceSpec{Selector: map[string]string{"app": "a"}}}
-	sameSvc := &corev1.Service{Spec: corev1.ServiceSpec{Selector: map[string]string{"app": "a"}}}
-	changedSvc := &corev1.Service{Spec: corev1.ServiceSpec{Selector: map[string]string{"app": "b"}}}
+	oldSvc := &corev1.Service{Spec: corev1.ServiceSpec{Selector: map[string]string{testAppLabel: "a"}}}
+	sameSvc := &corev1.Service{Spec: corev1.ServiceSpec{Selector: map[string]string{testAppLabel: "a"}}}
+	changedSvc := &corev1.Service{Spec: corev1.ServiceSpec{Selector: map[string]string{testAppLabel: "b"}}}
 
 	if p.Update(event.TypedUpdateEvent[*corev1.Service]{ObjectOld: oldSvc, ObjectNew: sameSvc}) {
 		t.Error("unchanged selector should be filtered out")

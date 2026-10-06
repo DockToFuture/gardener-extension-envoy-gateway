@@ -635,7 +635,7 @@ func (d *Deployer) clusterRole() *rbacv1.ClusterRole {
 	return &rbacv1.ClusterRole{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: apiVersionRBAC,
-			Kind:       "ClusterRole",
+			Kind:       kindClusterRole,
 		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   ClusterRoleName,
@@ -649,15 +649,15 @@ func (d *Deployer) clusterRoleBinding() *rbacv1.ClusterRoleBinding {
 	return &rbacv1.ClusterRoleBinding{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: apiVersionRBAC,
-			Kind:       "ClusterRoleBinding",
+			Kind:       kindClusterRoleBinding,
 		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   ClusterRoleName,
 			Labels: commonLabels(),
 		},
 		RoleRef: rbacv1.RoleRef{
-			APIGroup: "rbac.authorization.k8s.io",
-			Kind:     "ClusterRole",
+			APIGroup: apiGroupRBAC,
+			Kind:     kindClusterRole,
 			Name:     ClusterRoleName,
 		},
 		Subjects: []rbacv1.Subject{
@@ -720,7 +720,7 @@ func (d *Deployer) netpolControllerClusterRole() *rbacv1.ClusterRole {
 	return &rbacv1.ClusterRole{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: apiVersionRBAC,
-			Kind:       "ClusterRole",
+			Kind:       kindClusterRole,
 		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   NetpolControllerClusterRoleName,
@@ -734,15 +734,15 @@ func (d *Deployer) netpolControllerClusterRoleBinding() *rbacv1.ClusterRoleBindi
 	return &rbacv1.ClusterRoleBinding{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: apiVersionRBAC,
-			Kind:       "ClusterRoleBinding",
+			Kind:       kindClusterRoleBinding,
 		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   NetpolControllerClusterRoleName,
 			Labels: commonLabels(),
 		},
 		RoleRef: rbacv1.RoleRef{
-			APIGroup: "rbac.authorization.k8s.io",
-			Kind:     "ClusterRole",
+			APIGroup: apiGroupRBAC,
+			Kind:     kindClusterRole,
 			Name:     NetpolControllerClusterRoleName,
 		},
 		Subjects: []rbacv1.Subject{
@@ -793,7 +793,7 @@ func (d *Deployer) leaderElectionRoleBinding() *rbacv1.RoleBinding {
 			Labels:    commonLabels(),
 		},
 		RoleRef: rbacv1.RoleRef{
-			APIGroup: "rbac.authorization.k8s.io",
+			APIGroup: apiGroupRBAC,
 			Kind:     "Role",
 			Name:     LeaderElectionRoleName,
 		},

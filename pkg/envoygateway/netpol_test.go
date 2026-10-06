@@ -15,6 +15,9 @@ import (
 const (
 	nsTeamA = "team-a"
 	nsTeamB = "team-b"
+
+	testAppLabel    = "app"
+	testBackendName = "backend"
 )
 
 func TestDataPlaneProxyIngressPolicy_Spec(t *testing.T) {
@@ -70,8 +73,8 @@ func TestDataPlaneProxyIngressPolicy_Spec(t *testing.T) {
 
 func TestProxyEgressPolicy_SameAndCrossNamespaceBackends(t *testing.T) {
 	backends := []BackendTarget{
-		{Namespace: nsTeamA, PodSelector: map[string]string{"app": "local"}},
-		{Namespace: nsTeamB, PodSelector: map[string]string{"app": "remote"}},
+		{Namespace: nsTeamA, PodSelector: map[string]string{testAppLabel: "local"}},
+		{Namespace: nsTeamB, PodSelector: map[string]string{testAppLabel: "remote"}},
 	}
 	np := ProxyEgressPolicy(nsTeamA, backends)
 
@@ -120,7 +123,7 @@ func TestProxyEgressPolicy_SameAndCrossNamespaceBackends(t *testing.T) {
 	if local.To[0].NamespaceSelector != nil {
 		t.Error("expected same-namespace backend peer to omit a namespaceSelector")
 	}
-	if got := local.To[0].PodSelector.MatchLabels["app"]; got != "local" {
+	if got := local.To[0].PodSelector.MatchLabels[testAppLabel]; got != "local" {
 		t.Errorf("expected same-ns podSelector app=local, got %q", got)
 	}
 
@@ -132,13 +135,13 @@ func TestProxyEgressPolicy_SameAndCrossNamespaceBackends(t *testing.T) {
 	if got := remote.To[0].NamespaceSelector.MatchLabels[MetadataNameLabel]; got != nsTeamB {
 		t.Errorf("expected cross-ns namespaceSelector metadata.name=%q, got %q", nsTeamB, got)
 	}
-	if got := remote.To[0].PodSelector.MatchLabels["app"]; got != "remote" {
+	if got := remote.To[0].PodSelector.MatchLabels[testAppLabel]; got != "remote" {
 		t.Errorf("expected cross-ns podSelector app=remote, got %q", got)
 	}
 }
 
 func TestBackendIngressPolicy_Spec(t *testing.T) {
-	np := BackendIngressPolicy(nsTeamB, nsTeamA, map[string]string{"app": "backend"})
+	np := BackendIngressPolicy(nsTeamB, nsTeamA, map[string]string{testAppLabel: testBackendName})
 
 	if np.Namespace != nsTeamB {
 		t.Errorf("expected policy in backend namespace %q, got %q", nsTeamB, np.Namespace)
@@ -146,7 +149,7 @@ func TestBackendIngressPolicy_Spec(t *testing.T) {
 	if np.Name != BackendIngressPolicyName(nsTeamA) {
 		t.Errorf("expected name %q, got %q", BackendIngressPolicyName(nsTeamA), np.Name)
 	}
-	if got := np.Spec.PodSelector.MatchLabels["app"]; got != "backend" {
+	if got := np.Spec.PodSelector.MatchLabels[testAppLabel]; got != testBackendName {
 		t.Errorf("expected podSelector app=backend, got %q", got)
 	}
 	if len(np.Spec.PolicyTypes) != 1 || np.Spec.PolicyTypes[0] != networkingv1.PolicyTypeIngress {
@@ -223,11 +226,11 @@ func TestStalePolicies_DistinctNamesInOneNamespace(t *testing.T) {
 	nameA := BackendIngressPolicyName(nsTeamA)
 	nameB := BackendIngressPolicyName(nsTeamB)
 	existing := []networkingv1.NetworkPolicy{
-		policyIn("backend", nameA, HopBackendIngress),
-		policyIn("backend", nameB, HopBackendIngress),
+		policyIn(testBackendName, nameA, HopBackendIngress),
+		policyIn(testBackendName, nameB, HopBackendIngress),
 	}
 
-	stale := StalePolicies(existing, []client.ObjectKey{{Namespace: "backend", Name: nameA}})
+	stale := StalePolicies(existing, []client.ObjectKey{{Namespace: testBackendName, Name: nameA}})
 	if len(stale) != 1 || stale[0].Name != nameB {
 		t.Fatalf("expected only the %q policy to be pruned, got %v", nameB, stale)
 	}

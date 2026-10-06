@@ -72,7 +72,7 @@ func refGrant(ns string, fromKind, fromNs string, toServiceName *string) *gatewa
 	}
 
 	return &gatewayv1.ReferenceGrant{
-		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "grant"},
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: testGrantName},
 		Spec: gatewayv1.ReferenceGrantSpec{
 			From: []gatewayv1.ReferenceGrantFrom{{
 				Group:     envoygateway.APIGroupGatewayAPI,
@@ -95,25 +95,23 @@ func resolve(t *testing.T, objs []client.Object, route RouteInfo) ([]envoygatewa
 	return targets, skips
 }
 
-func ptrStr(s string) *string { return &s }
-
 func TestResolveBackends_SameNamespace(t *testing.T) {
 	targets, skips := resolve(t,
-		[]client.Object{svc("app", "backend", map[string]string{"app": "backend"})},
-		RouteInfo{Namespace: "app", BackendRefs: []gatewayv1.BackendObjectReference{backendRef("", "backend", nil, nil)}},
+		[]client.Object{svc(testAppLabel, testBackendName, map[string]string{testAppLabel: testBackendName})},
+		RouteInfo{Namespace: testAppLabel, BackendRefs: []gatewayv1.BackendObjectReference{backendRef("", testBackendName, nil, nil)}},
 	)
 	if len(skips) != 0 {
 		t.Fatalf("expected no skips, got %v", skips)
 	}
-	if len(targets) != 1 || targets[0].Namespace != "app" || targets[0].PodSelector["app"] != "backend" {
+	if len(targets) != 1 || targets[0].Namespace != testAppLabel || targets[0].PodSelector[testAppLabel] != testBackendName {
 		t.Fatalf("expected one same-ns target with the Service selector, got %v", targets)
 	}
 }
 
 func TestResolveBackends_CrossNamespaceWithoutGrant(t *testing.T) {
 	targets, skips := resolve(t,
-		[]client.Object{svc("other", "backend", map[string]string{"app": "x"})},
-		RouteInfo{Namespace: "app", BackendRefs: []gatewayv1.BackendObjectReference{backendRef("other", "backend", nil, nil)}},
+		[]client.Object{svc(testNsOther, testBackendName, map[string]string{testAppLabel: "x"})},
+		RouteInfo{Namespace: testAppLabel, BackendRefs: []gatewayv1.BackendObjectReference{backendRef(testNsOther, testBackendName, nil, nil)}},
 	)
 	if len(targets) != 0 {
 		t.Fatalf("expected no targets without a ReferenceGrant, got %v", targets)
@@ -126,15 +124,15 @@ func TestResolveBackends_CrossNamespaceWithoutGrant(t *testing.T) {
 func TestResolveBackends_CrossNamespaceWithGrant(t *testing.T) {
 	targets, skips := resolve(t,
 		[]client.Object{
-			svc("other", "backend", map[string]string{"app": "x"}),
-			refGrant("other", "HTTPRoute", "app", nil),
+			svc(testNsOther, testBackendName, map[string]string{testAppLabel: "x"}),
+			refGrant(testNsOther, testKindHTTPRoute, testAppLabel, nil),
 		},
-		RouteInfo{Namespace: "app", BackendRefs: []gatewayv1.BackendObjectReference{backendRef("other", "backend", nil, nil)}},
+		RouteInfo{Namespace: testAppLabel, BackendRefs: []gatewayv1.BackendObjectReference{backendRef(testNsOther, testBackendName, nil, nil)}},
 	)
 	if len(skips) != 0 {
 		t.Fatalf("expected no skips with a matching grant, got %v", skips)
 	}
-	if len(targets) != 1 || targets[0].Namespace != "other" {
+	if len(targets) != 1 || targets[0].Namespace != testNsOther {
 		t.Fatalf("expected one cross-ns target, got %v", targets)
 	}
 }
@@ -143,10 +141,10 @@ func TestResolveBackends_GrantScopedToOtherService(t *testing.T) {
 	// A grant that names a different Service must not permit this ref.
 	_, skips := resolve(t,
 		[]client.Object{
-			svc("other", "backend", map[string]string{"app": "x"}),
-			refGrant("other", "HTTPRoute", "app", ptrStr("different")),
+			svc(testNsOther, testBackendName, map[string]string{testAppLabel: "x"}),
+			refGrant(testNsOther, testKindHTTPRoute, testAppLabel, new("different")),
 		},
-		RouteInfo{Namespace: "app", BackendRefs: []gatewayv1.BackendObjectReference{backendRef("other", "backend", nil, nil)}},
+		RouteInfo{Namespace: testAppLabel, BackendRefs: []gatewayv1.BackendObjectReference{backendRef(testNsOther, testBackendName, nil, nil)}},
 	)
 	if len(skips) != 1 || skips[0].Reason != ReasonNoReferenceGrant {
 		t.Fatalf("expected a NoReferenceGrant skip for a name-scoped grant to a different Service, got %v", skips)
@@ -156,10 +154,10 @@ func TestResolveBackends_GrantScopedToOtherService(t *testing.T) {
 func TestResolveBackends_GrantScopedToThisService(t *testing.T) {
 	targets, skips := resolve(t,
 		[]client.Object{
-			svc("other", "backend", map[string]string{"app": "x"}),
-			refGrant("other", "HTTPRoute", "app", ptrStr("backend")),
+			svc(testNsOther, testBackendName, map[string]string{testAppLabel: "x"}),
+			refGrant(testNsOther, testKindHTTPRoute, testAppLabel, new(testBackendName)),
 		},
-		RouteInfo{Namespace: "app", BackendRefs: []gatewayv1.BackendObjectReference{backendRef("other", "backend", nil, nil)}},
+		RouteInfo{Namespace: testAppLabel, BackendRefs: []gatewayv1.BackendObjectReference{backendRef(testNsOther, testBackendName, nil, nil)}},
 	)
 	if len(skips) != 0 || len(targets) != 1 {
 		t.Fatalf("expected the name-scoped grant to permit its Service, got targets=%v skips=%v", targets, skips)
@@ -168,8 +166,8 @@ func TestResolveBackends_GrantScopedToThisService(t *testing.T) {
 
 func TestResolveBackends_SelectorlessSkipped(t *testing.T) {
 	_, skips := resolve(t,
-		[]client.Object{svc("app", "headless", nil)},
-		RouteInfo{Namespace: "app", BackendRefs: []gatewayv1.BackendObjectReference{backendRef("", "headless", nil, nil)}},
+		[]client.Object{svc(testAppLabel, "headless", nil)},
+		RouteInfo{Namespace: testAppLabel, BackendRefs: []gatewayv1.BackendObjectReference{backendRef("", "headless", nil, nil)}},
 	)
 	if len(skips) != 1 || skips[0].Reason != ReasonSelectorless {
 		t.Fatalf("expected a SelectorlessService skip, got %v", skips)
@@ -178,8 +176,8 @@ func TestResolveBackends_SelectorlessSkipped(t *testing.T) {
 
 func TestResolveBackends_ExternalNameSkipped(t *testing.T) {
 	_, skips := resolve(t,
-		[]client.Object{externalNameSvc("app", "ext")},
-		RouteInfo{Namespace: "app", BackendRefs: []gatewayv1.BackendObjectReference{backendRef("", "ext", nil, nil)}},
+		[]client.Object{externalNameSvc(testAppLabel, "ext")},
+		RouteInfo{Namespace: testAppLabel, BackendRefs: []gatewayv1.BackendObjectReference{backendRef("", "ext", nil, nil)}},
 	)
 	if len(skips) != 1 || skips[0].Reason != ReasonSelectorless {
 		t.Fatalf("expected an ExternalName Service to be skipped as selector-less, got %v", skips)
@@ -189,8 +187,8 @@ func TestResolveBackends_ExternalNameSkipped(t *testing.T) {
 func TestResolveBackends_NonServiceSkipped(t *testing.T) {
 	_, skips := resolve(t,
 		nil,
-		RouteInfo{Namespace: "app", BackendRefs: []gatewayv1.BackendObjectReference{
-			backendRef("", "my-backend", ptrStr("Backend"), ptrStr("gateway.envoyproxy.io")),
+		RouteInfo{Namespace: testAppLabel, BackendRefs: []gatewayv1.BackendObjectReference{
+			backendRef("", "my-backend", new("Backend"), new("gateway.envoyproxy.io")),
 		}},
 	)
 	if len(skips) != 1 || skips[0].Reason != ReasonNotService {
@@ -201,7 +199,7 @@ func TestResolveBackends_NonServiceSkipped(t *testing.T) {
 func TestResolveBackends_MissingServiceSkipped(t *testing.T) {
 	_, skips := resolve(t,
 		nil,
-		RouteInfo{Namespace: "app", BackendRefs: []gatewayv1.BackendObjectReference{backendRef("", "ghost", nil, nil)}},
+		RouteInfo{Namespace: testAppLabel, BackendRefs: []gatewayv1.BackendObjectReference{backendRef("", "ghost", nil, nil)}},
 	)
 	if len(skips) != 1 || skips[0].Reason != ReasonServiceNotFound {
 		t.Fatalf("expected a ServiceNotFound skip, got %v", skips)
@@ -210,10 +208,10 @@ func TestResolveBackends_MissingServiceSkipped(t *testing.T) {
 
 func TestResolveBackends_Dedupe(t *testing.T) {
 	targets, skips := resolve(t,
-		[]client.Object{svc("app", "backend", map[string]string{"app": "backend"})},
-		RouteInfo{Namespace: "app", BackendRefs: []gatewayv1.BackendObjectReference{
-			backendRef("", "backend", nil, nil),
-			backendRef("app", "backend", nil, nil),
+		[]client.Object{svc(testAppLabel, testBackendName, map[string]string{testAppLabel: testBackendName})},
+		RouteInfo{Namespace: testAppLabel, BackendRefs: []gatewayv1.BackendObjectReference{
+			backendRef("", testBackendName, nil, nil),
+			backendRef(testAppLabel, testBackendName, nil, nil),
 		}},
 	)
 	if len(skips) != 0 {

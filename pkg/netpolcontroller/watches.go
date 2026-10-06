@@ -163,6 +163,8 @@ func mapManagedPolicyToRequests(_ context.Context, np *networkingv1.NetworkPolic
 				}
 			}
 		}
+	default:
+		// Not one of our managed hops; nothing to enqueue.
 	}
 
 	return nil

@@ -9,6 +9,7 @@ package netpolcontroller
 import (
 	"context"
 	"fmt"
+	"maps"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -237,9 +238,7 @@ func isRouteKind(kind string) bool {
 // never aliased into a long-lived NetworkPolicy object.
 func copyStringMap(m map[string]string) map[string]string {
 	out := make(map[string]string, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
+	maps.Copy(out, m)
 
 	return out
 }

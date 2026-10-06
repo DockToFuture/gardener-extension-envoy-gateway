@@ -81,12 +81,13 @@ func (d *netpolControllerDeployer) Ensure(ctx context.Context, logger logr.Logge
 	}
 
 	obj := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: envoygateway.NetpolControllerName, Namespace: seedNamespace}}
-	if _, err := controllerutil.CreateOrUpdate(ctx, d.seedClient, obj, func() error {
+	_, err = controllerutil.CreateOrUpdate(ctx, d.seedClient, obj, func() error {
 		obj.Labels = deployment.Labels
 		obj.Spec = deployment.Spec
 
 		return nil
-	}); err != nil {
+	})
+	if err != nil {
 		return fmt.Errorf("failed to apply netpol-controller Deployment: %w", err)
 	}
 
@@ -134,6 +135,8 @@ func (d *netpolControllerDeployer) ScaleDown(ctx context.Context, logger logr.Lo
 // Gateways/routes), the seed runtime apiserver (its leader-election lease), and
 // DNS. The container runs the `netpol-controller` subcommand of this extension's
 // own image.
+//
+//nolint:revive // experimental is intrinsic config (which route kinds to watch), not control-flow coupling.
 func (d *netpolControllerDeployer) deployment(seedNamespace string, experimental bool) (*appsv1.Deployment, error) {
 	img, err := d.imageVector.FindImage(envoygateway.ExtensionImageName)
 	if err != nil {
@@ -173,7 +176,7 @@ func (d *netpolControllerDeployer) deployment(seedNamespace string, experimental
 				ObjectMeta: metav1.ObjectMeta{Labels: podLabels},
 				Spec: corev1.PodSpec{
 					SecurityContext: &corev1.PodSecurityContext{
-						RunAsNonRoot: ptr.To(true),
+						RunAsNonRoot: new(true),
 						RunAsUser:    ptr.To[int64](65532),
 						RunAsGroup:   ptr.To[int64](65532),
 						FSGroup:      ptr.To[int64](65532),
@@ -192,8 +195,8 @@ func (d *netpolControllerDeployer) deployment(seedNamespace string, experimental
 							},
 						},
 						SecurityContext: &corev1.SecurityContext{
-							AllowPrivilegeEscalation: ptr.To(false),
-							ReadOnlyRootFilesystem:   ptr.To(true),
+							AllowPrivilegeEscalation: new(false),
+							ReadOnlyRootFilesystem:   new(true),
 							Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 						},
 					}},
