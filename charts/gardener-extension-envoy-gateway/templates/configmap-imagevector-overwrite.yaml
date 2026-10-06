@@ -1,4 +1,3 @@
-{{- if .Values.imageVectorOverwrite }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -9,5 +8,22 @@ metadata:
     app.kubernetes.io/instance: {{ .Release.Name }}
 data:
   images_overwrite.yaml: |
+{{- if .Values.imageVectorOverwrite }}
+    # Landscape-supplied overwrite (e.g. signed registry mirror). Used verbatim;
+    # the landscape is responsible for also redirecting the extension's own image
+    # (name: gardener-extension-envoy-gateway) if required.
 {{ .Values.imageVectorOverwrite | indent 4 }}
+{{- else }}
+    # Default overwrite: pin the extension's own image-vector entry to the image
+    # this extension is actually running, so the seed-side netpol-controller
+    # Deployment runs the same image (it carries the netpol-controller
+    # subcommand). Mirrors the container image logic in deployment.yaml.
+    images:
+    - name: gardener-extension-envoy-gateway
+      repository: {{ .Values.image.repository }}
+      {{- if hasPrefix "sha256:" .Values.image.tag }}
+      tag: "{{ .Values.image.tag }}"
+      {{- else }}
+      tag: "{{ .Values.image.tag | default .Chart.AppVersion }}"
+      {{- end }}
 {{- end }}

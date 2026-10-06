@@ -109,6 +109,11 @@ type Config struct {
 	// admissionregistration.k8s.io/v1 API that is only served from 1.30 onwards.
 	// Empty means "unknown", in which case version-gated resources are skipped.
 	ShootKubernetesVersion string
+	// ManageDataPlaneNetworkPolicies controls whether the in-shoot RBAC for the
+	// per-shoot data-plane NetworkPolicy controller (its ServiceAccount,
+	// ClusterRole, and binding) is delivered. The controller itself runs on the
+	// seed; this RBAC backs the shoot-access token it authenticates with.
+	ManageDataPlaneNetworkPolicies bool
 }
 
 // DefaultConfig returns the default configuration.
@@ -307,6 +312,25 @@ func (d *Deployer) buildResources(tls TLSBundle) (map[string][]byte, error) {
 
 	if d.config.ManageCRDs {
 		d.addCRDs(resources)
+	}
+
+	// In-shoot RBAC for the per-shoot data-plane NetworkPolicy controller. The
+	// controller runs on the seed but authenticates to the shoot as this
+	// ServiceAccount; omitting these objects when the feature is off lets GRM
+	// garbage-collect them.
+	if d.config.ManageDataPlaneNetworkPolicies {
+		for _, o := range []struct {
+			name string
+			obj  runtime.Object
+		}{
+			{"netpol-controller-serviceaccount.yaml", d.netpolControllerServiceAccount()},
+			{"netpol-controller-clusterrole.yaml", d.netpolControllerClusterRole()},
+			{"netpol-controller-clusterrolebinding.yaml", d.netpolControllerClusterRoleBinding()},
+		} {
+			if err := encode(o.name, o.obj); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	return resources, nil
@@ -582,17 +606,17 @@ func (d *Deployer) clusterRole() *rbacv1.ClusterRole {
 			// gatewayclasses is cluster-scoped; envoy-gateway also sets a
 			// finalizer on the class it manages, so patch/update are needed
 			// in addition to the read verbs.
-			APIGroups: []string{apiGroupGatewayAPI},
+			APIGroups: []string{APIGroupGatewayAPI},
 			Resources: []string{"gatewayclasses"},
 			Verbs:     []string{verbGet, verbList, verbWatch, verbPatch, verbUpdate},
 		},
 		{
-			APIGroups: []string{apiGroupGatewayAPI},
+			APIGroups: []string{APIGroupGatewayAPI},
 			Resources: []string{"gateways", "httproutes", "grpcroutes", "tcproutes", "tlsroutes", "udproutes", "referencegrants", "backendtlspolicies", "listenersets"},
 			Verbs:     []string{verbGet, verbList, verbWatch},
 		},
 		{
-			APIGroups: []string{apiGroupGatewayAPI},
+			APIGroups: []string{APIGroupGatewayAPI},
 			Resources: []string{"gatewayclasses/status", "gateways/status", "httproutes/status", "grpcroutes/status", "tcproutes/status", "tlsroutes/status", "udproutes/status", "backendtlspolicies/status", "listenersets/status"},
 			Verbs:     []string{verbUpdate, verbPatch},
 		},
@@ -640,6 +664,91 @@ func (d *Deployer) clusterRoleBinding() *rbacv1.ClusterRoleBinding {
 			{
 				Kind:      kindServiceAccount,
 				Name:      ServiceAccountName,
+				Namespace: Namespace,
+			},
+		},
+	}
+}
+
+// netpolControllerServiceAccount is the shoot ServiceAccount the seed-side
+// data-plane NetworkPolicy controller authenticates as (via its shoot-access
+// token). It lives in kube-system, where GRM's token-requestor mints tokens.
+func (d *Deployer) netpolControllerServiceAccount() *corev1.ServiceAccount {
+	return &corev1.ServiceAccount{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       kindServiceAccount,
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      NetpolControllerServiceAccountName,
+			Namespace: Namespace,
+			Labels:    commonLabels(),
+		},
+	}
+}
+
+// netpolControllerClusterRole is the least-privilege ClusterRole for the
+// data-plane NetworkPolicy controller: read-only on the Gateway API objects and
+// Services it derives policies from, and full CRUD on NetworkPolicies
+// cluster-wide (it writes hop-1/2 into Gateway namespaces and hop-3 into any
+// backend namespace). The experimental-channel route kinds are added only when
+// that channel is enabled.
+func (d *Deployer) netpolControllerClusterRole() *rbacv1.ClusterRole {
+	routeResources := []string{"gateways", "httproutes", "grpcroutes", "referencegrants"}
+	if d.config.ExperimentalFeatures {
+		routeResources = append(routeResources, "tcproutes", "tlsroutes", "udproutes")
+	}
+
+	rules := []rbacv1.PolicyRule{
+		{
+			APIGroups: []string{APIGroupGatewayAPI},
+			Resources: routeResources,
+			Verbs:     []string{verbGet, verbList, verbWatch},
+		},
+		{
+			APIGroups: []string{""},
+			Resources: []string{"services"},
+			Verbs:     []string{verbGet, verbList, verbWatch},
+		},
+		{
+			APIGroups: []string{"networking.k8s.io"},
+			Resources: []string{"networkpolicies"},
+			Verbs:     []string{verbGet, verbList, verbWatch, verbCreate, verbUpdate, verbPatch, verbDelete},
+		},
+	}
+
+	return &rbacv1.ClusterRole{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: apiVersionRBAC,
+			Kind:       "ClusterRole",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   NetpolControllerClusterRoleName,
+			Labels: commonLabels(),
+		},
+		Rules: rules,
+	}
+}
+
+func (d *Deployer) netpolControllerClusterRoleBinding() *rbacv1.ClusterRoleBinding {
+	return &rbacv1.ClusterRoleBinding{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: apiVersionRBAC,
+			Kind:       "ClusterRoleBinding",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   NetpolControllerClusterRoleName,
+			Labels: commonLabels(),
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "ClusterRole",
+			Name:     NetpolControllerClusterRoleName,
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      kindServiceAccount,
+				Name:      NetpolControllerServiceAccountName,
 				Namespace: Namespace,
 			},
 		},
@@ -932,7 +1041,7 @@ func (d *Deployer) podDisruptionBudget() *policyv1.PodDisruptionBudget {
 // every inbound connection to our pod, and every user Gateway's Envoy stays
 // stuck with "xds_cluster connection timeout".
 func (d *Deployer) networkPolicy() *networkingv1.NetworkPolicy {
-	xdsPort := intstr.FromInt(18000)
+	xdsPort := intstr.FromInt(XDSPort)
 	metricsPort := intstr.FromInt(19001)
 	tcp := corev1.ProtocolTCP
 

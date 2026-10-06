@@ -67,3 +67,18 @@ rules:
   - update
   - patch
   - delete
+
+# Permissions required for deploying the per-shoot data-plane NetworkPolicy
+# controller into the shoot's control-plane namespace on the seed.
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete

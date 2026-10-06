@@ -58,6 +58,7 @@ type Actuator struct {
 
 	gatewayLister    GatewayLister
 	netpolReconciler DataPlaneNetworkPolicyReconciler
+	netpolDeployer   NetpolControllerDeployer
 	orphanSweeper    OrphanDataPlaneSweeper
 }
 
@@ -97,6 +98,10 @@ func New(c client.Client, imageVector imagevector.ImageVector, opts ...Option) (
 
 	if act.netpolReconciler == nil {
 		act.netpolReconciler = NewDataPlaneNetworkPolicyReconciler(c)
+	}
+
+	if act.netpolDeployer == nil {
+		act.netpolDeployer = NewNetpolControllerDeployer(c, imageVector)
 	}
 
 	if act.orphanSweeper == nil {
@@ -162,6 +167,16 @@ func WithOrphanDataPlaneSweeper(s OrphanDataPlaneSweeper) Option {
 	}
 }
 
+// WithNetpolControllerDeployer configures the [Actuator] with a custom
+// [NetpolControllerDeployer].
+func WithNetpolControllerDeployer(dep NetpolControllerDeployer) Option {
+	return func(a *Actuator) error {
+		a.netpolDeployer = dep
+
+		return nil
+	}
+}
+
 // Name returns the name of the actuator.
 func (a *Actuator) Name() string { return Name }
 
@@ -200,6 +215,14 @@ func (a *Actuator) Reconcile(ctx context.Context, logger logr.Logger, ex *extens
 
 	if v1beta1helper.HibernationIsEnabled(cluster.Shoot) {
 		logger.Info("shoot is hibernated, skipping envoy-gateway deployment", "cluster", clusterName)
+
+		// Scale the data-plane NetworkPolicy controller to zero: the shoot API
+		// server is unreachable while hibernated, so the controller cannot do
+		// useful work, but we keep its Deployment + shoot-access secret so it
+		// resumes on wake-up without a re-mint.
+		if err := a.netpolDeployer.ScaleDown(ctx, logger, clusterName); err != nil {
+			return fmt.Errorf("failed to scale down data-plane NetworkPolicy controller for hibernation: %w", err)
+		}
 
 		return nil
 	}
@@ -251,6 +274,10 @@ func (a *Actuator) Reconcile(ctx context.Context, logger logr.Logger, ex *extens
 		}
 	}
 
+	// Ship the in-shoot RBAC for the data-plane NetworkPolicy controller only
+	// when the feature is on; GRM garbage-collects it when it is off.
+	egConfig.ManageDataPlaneNetworkPolicies = manageDataPlaneNetworkPolicies
+
 	deployer := envoygateway.NewDeployer(a.client, logger, egConfig, a.imageVector)
 
 	tlsBundle, err := a.reconcileSecrets(ctx, logger, cluster, clusterName)
@@ -271,18 +298,26 @@ func (a *Actuator) Reconcile(ctx context.Context, logger logr.Logger, ex *extens
 		logger.Error(err, "failed to sweep orphaned data-plane resources from kube-system; continuing", "cluster", clusterName)
 	}
 
-	// Reconcile the data-plane ingress NetworkPolicies against the shoot. The
-	// desired set is the namespaces that currently hold a Gateway (empty when the
-	// feature is off), so a disabled feature converges to no managed policies.
-	var desiredNetpolNamespaces []string
+	// Reconcile the per-shoot data-plane NetworkPolicy controller. When the
+	// feature is on, ensure its seed Deployment + shoot-access secret exist; the
+	// controller then watches the shoot's Gateways/routes and reconciles all
+	// three hops event-driven (superseding the old inline poll). When off, tear
+	// the controller down so a disabled feature converges to no controller. The
+	// torn-down controller cannot be relied on to prune the policies it wrote
+	// before its pod goes away, so we also prune them directly here.
 	if manageDataPlaneNetworkPolicies {
-		desiredNetpolNamespaces, err = a.gatewayLister.ListGatewayNamespaces(ctx, clusterName)
-		if err != nil {
-			return fmt.Errorf("failed to list Gateway namespaces for data-plane NetworkPolicies: %w", err)
+		if err := a.netpolDeployer.Ensure(ctx, logger, cluster, clusterName, egConfig.ExperimentalFeatures); err != nil {
+			return fmt.Errorf("failed to ensure data-plane NetworkPolicy controller: %w", err)
 		}
-	}
-	if err := a.netpolReconciler.Reconcile(ctx, clusterName, desiredNetpolNamespaces); err != nil {
-		return fmt.Errorf("failed to reconcile data-plane NetworkPolicies: %w", err)
+	} else {
+		if err := a.netpolDeployer.Teardown(ctx, logger, clusterName); err != nil {
+			return fmt.Errorf("failed to tear down data-plane NetworkPolicy controller: %w", err)
+		}
+		// With the controller gone, prune any policies a previously-enabled run
+		// left behind so disabling the feature converges to no managed policies.
+		if err := a.netpolReconciler.Reconcile(ctx, clusterName, nil); err != nil {
+			return fmt.Errorf("failed to prune data-plane NetworkPolicies after disabling the feature: %w", err)
+		}
 	}
 
 	logger.Info("successfully reconciled envoy-gateway extension", "cluster", clusterName)
@@ -371,6 +406,13 @@ func (a *Actuator) Delete(ctx context.Context, logger logr.Logger, ex *extension
 		if err := a.netpolReconciler.Reconcile(ctx, clusterName, nil); err != nil {
 			return fmt.Errorf("failed to remove data-plane NetworkPolicies: %w", err)
 		}
+	}
+
+	// Tear down the per-shoot NetworkPolicy controller (Deployment +
+	// shoot-access secret) in all delete cases — a deleted Extension never keeps
+	// its controller.
+	if err := a.netpolDeployer.Teardown(ctx, logger, clusterName); err != nil {
+		return fmt.Errorf("failed to tear down data-plane NetworkPolicy controller: %w", err)
 	}
 
 	deployer := envoygateway.NewDeployer(a.client, logger, envoygateway.DefaultConfig(), a.imageVector)
@@ -486,6 +528,9 @@ func (a *Actuator) ForceDelete(ctx context.Context, logger logr.Logger, ex *exte
 	}()
 
 	logger.Info("shoot has been force-deleted, deleting envoy-gateway resources", "cluster", clusterName)
+	if err := a.netpolDeployer.Teardown(ctx, logger, clusterName); err != nil {
+		return fmt.Errorf("failed to tear down data-plane NetworkPolicy controller during force-delete: %w", err)
+	}
 	deployer := envoygateway.NewDeployer(a.client, logger, envoygateway.DefaultConfig(), a.imageVector)
 	if err := deployer.DeleteKeepingObjects(ctx, clusterName); err != nil {
 		return fmt.Errorf("failed to force-delete envoy-gateway: %w", err)
@@ -515,6 +560,9 @@ func (a *Actuator) Migrate(ctx context.Context, logger logr.Logger, ex *extensio
 	}()
 
 	logger.Info("migrating envoy-gateway extension, cleaning up control-plane resources", "cluster", clusterName)
+	if err := a.netpolDeployer.Teardown(ctx, logger, clusterName); err != nil {
+		return fmt.Errorf("failed to tear down data-plane NetworkPolicy controller during migrate: %w", err)
+	}
 	deployer := envoygateway.NewDeployer(a.client, logger, envoygateway.DefaultConfig(), a.imageVector)
 	if err := deployer.DeleteKeepingObjects(ctx, clusterName); err != nil {
 		return fmt.Errorf("failed to delete envoy-gateway managed resource during migrate: %w", err)

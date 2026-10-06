@@ -67,11 +67,9 @@ spec:
             {{- range $key, $val := .Values.gardener.gardenlet.featureGates }}
             - --gardenlet-feature-gate={{ $key }}={{ $val }}
             {{- end }}
-          {{- if .Values.imageVectorOverwrite }}
           env:
             - name: IMAGEVECTOR_OVERWRITE
               value: /charts_overwrite/images_overwrite.yaml
-          {{- end }}
           {{- with .Values.securityContext }}
           securityContext:
             {{- toYaml . | nindent 12 }}
@@ -110,29 +108,21 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- if or .Values.volumeMounts .Values.imageVectorOverwrite }}
           volumeMounts:
             {{- with .Values.volumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-            {{- if .Values.imageVectorOverwrite }}
             - name: imagevector-overwrite
               mountPath: /charts_overwrite/
               readOnly: true
-            {{- end }}
-          {{- end }}
-      {{- if or .Values.volumes .Values.imageVectorOverwrite }}
       volumes:
         {{- with .Values.volumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-        {{- if .Values.imageVectorOverwrite }}
         - name: imagevector-overwrite
           configMap:
             name: {{ .Values.extension.name }}-imagevector-overwrite
             defaultMode: 420
-        {{- end }}
-      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
