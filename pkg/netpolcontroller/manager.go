@@ -52,6 +52,8 @@ type Options struct {
 // built-in Kubernetes types (Service, NetworkPolicy) plus the Gateway API types
 // the controller watches and resolves. The experimental v1alpha2 route kinds
 // are registered only when enabled.
+//
+//nolint:revive // experimental is intrinsic config (which route kinds to register), not control-flow coupling.
 func shootScheme(experimental bool) (*runtime.Scheme, error) {
 	s := runtime.NewScheme()
 	for _, add := range []func(*runtime.Scheme) error{
@@ -127,9 +129,10 @@ func NewManager(ctx context.Context, logger logr.Logger, opts Options) (manager.
 		if err := mgr.AddHealthzCheck("ping", healthz.Ping); err != nil {
 			return nil, fmt.Errorf("failed to add healthz check: %w", err)
 		}
-		if err := mgr.AddReadyzCheck("shoot-cache-sync", gardenerhealthz.NewCacheSyncHealthzWithDeadline(
+		readyCheck := gardenerhealthz.NewCacheSyncHealthzWithDeadline(
 			logger, clock.RealClock{}, shootCluster.GetCache(), 5*time.Second,
-		)); err != nil {
+		)
+		if err := mgr.AddReadyzCheck("shoot-cache-sync", readyCheck); err != nil {
 			return nil, fmt.Errorf("failed to add shoot-cache-sync readyz check: %w", err)
 		}
 	}
