@@ -69,9 +69,42 @@ func TestGenerateResources_DefaultConfig(t *testing.T) {
 	}
 
 	// The dead kube-system data-plane policy must no longer be shipped — it is
-	// replaced by the opt-in in-shoot controller.
+	// replaced by the opt-in, seed-side per-shoot NetworkPolicy controller.
 	if _, ok := resources["networkpolicy-proxies.yaml"]; ok {
 		t.Error("did not expect networkpolicy-proxies.yaml to be generated")
+	}
+
+	// The netpol-controller in-shoot RBAC is gated on
+	// ManageDataPlaneNetworkPolicies, which DefaultConfig leaves false.
+	for _, name := range []string{
+		"netpol-controller-serviceaccount.yaml",
+		"netpol-controller-clusterrole.yaml",
+		"netpol-controller-clusterrolebinding.yaml",
+	} {
+		if _, ok := resources[name]; ok {
+			t.Errorf("did not expect %q when ManageDataPlaneNetworkPolicies is false", name)
+		}
+	}
+}
+
+func TestGenerateResources_ShipsNetpolControllerRBACWhenEnabled(t *testing.T) {
+	cfg := supportedConfig()
+	cfg.ManageDataPlaneNetworkPolicies = true
+	d := NewDeployer(nil, logr.Discard(), cfg, newTestImageVector(t))
+
+	resources, err := d.GenerateResources()
+	if err != nil {
+		t.Fatalf("GenerateResources returned error: %v", err)
+	}
+
+	for _, name := range []string{
+		"netpol-controller-serviceaccount.yaml",
+		"netpol-controller-clusterrole.yaml",
+		"netpol-controller-clusterrolebinding.yaml",
+	} {
+		if _, ok := resources[name]; !ok {
+			t.Errorf("expected %q to be generated when ManageDataPlaneNetworkPolicies is true", name)
+		}
 	}
 }
 

@@ -10,28 +10,29 @@ import (
 
 	extensionsconfigv1alpha1 "github.com/gardener/gardener/extensions/pkg/apis/config/v1alpha1"
 	extensionsutil "github.com/gardener/gardener/extensions/pkg/util"
-	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	kubernetesscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	"github.com/gardener/gardener-extension-envoy-gateway/pkg/envoygateway"
 )
 
-// DataPlaneNetworkPolicyReconciler reconciles the per-Gateway-namespace
-// data-plane ingress NetworkPolicies directly against the shoot API server.
+// DataPlaneNetworkPolicyReconciler removes the data-plane NetworkPolicies this
+// extension manages directly from the shoot. While the feature is enabled the
+// per-shoot controller owns the policies' creation and update; this reconciler
+// handles the one-shot cleanup when the feature is disabled or the shoot's
+// Extension is deleted while the shoot still lives.
 type DataPlaneNetworkPolicyReconciler interface {
-	// Reconcile makes the data-plane NetworkPolicies in the shoot match
-	// desiredNamespaces: the policy is created/updated in every desired namespace
-	// and deleted everywhere else.
+	// Reconcile removes every data-plane NetworkPolicy this extension owns in the
+	// shoot, across all three hops (proxy ingress, proxy egress, backend
+	// ingress). desiredNamespaces is retained for signature compatibility; a
+	// non-empty set is treated as "keep nothing" the same as nil, because the
+	// per-shoot controller — not this reconciler — reconciles the desired state.
 	Reconcile(ctx context.Context, seedNamespace string, desiredNamespaces []string) error
 }
 
-// dataPlaneNetworkPolicyReconciler reconciles the policies against the shoot API
+// dataPlaneNetworkPolicyReconciler prunes the policies against the shoot API
 // server through a client built from the seed.
 type dataPlaneNetworkPolicyReconciler struct {
 	seedClient client.Client
@@ -43,15 +44,14 @@ func NewDataPlaneNetworkPolicyReconciler(seedClient client.Client) DataPlaneNetw
 	return &dataPlaneNetworkPolicyReconciler{seedClient: seedClient}
 }
 
-func (r *dataPlaneNetworkPolicyReconciler) Reconcile(ctx context.Context, seedNamespace string, desiredNamespaces []string) error {
+func (r *dataPlaneNetworkPolicyReconciler) Reconcile(ctx context.Context, seedNamespace string, _ []string) error {
 	scheme, err := kubernetesScheme()
 	if err != nil {
 		return err
 	}
 
-	// A direct (uncached) shoot client: the reconciler only issues occasional
-	// writes and a prune List, so a cache would add a shoot-wide NetworkPolicy
-	// informer for no benefit.
+	// A direct (uncached) shoot client: this is an occasional one-shot prune, so
+	// a cache would add a shoot-wide NetworkPolicy informer for no benefit.
 	_, shootClient, err := extensionsutil.NewClientForShoot(
 		ctx,
 		r.seedClient,
@@ -60,102 +60,26 @@ func (r *dataPlaneNetworkPolicyReconciler) Reconcile(ctx context.Context, seedNa
 		extensionsconfigv1alpha1.RESTOptions{},
 	)
 	if err != nil {
-		return fmt.Errorf("failed to build shoot client for data-plane NetworkPolicy reconciliation: %w", err)
+		return fmt.Errorf("failed to build shoot client for data-plane NetworkPolicy cleanup: %w", err)
 	}
 
-	for _, ns := range desiredNamespaces {
-		desired := dataPlaneNetworkPolicy(ns)
-		obj := &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: desired.Name, Namespace: ns}}
-		_, err := controllerutil.CreateOrUpdate(ctx, shootClient, obj, func() error {
-			obj.Labels = desired.Labels
-			obj.Spec = desired.Spec
-
-			return nil
-		})
-		if err != nil {
-			return fmt.Errorf("failed to reconcile data-plane NetworkPolicy in namespace %q: %w", ns, err)
-		}
-	}
-
-	// Prune managed policies whose namespace is no longer desired. With an empty
-	// desired set this removes all of them.
+	// Remove every data-plane policy this extension owns in the shoot, across all
+	// three hops: hop-1 proxy ingress, plus the hop-2 proxy egress and hop-3
+	// backend ingress policies the per-shoot controller wrote while the feature
+	// was enabled.
 	list := &networkingv1.NetworkPolicyList{}
-	if err := shootClient.List(ctx, list, managedDataPlanePolicyLabels()); err != nil {
+	if err := shootClient.List(ctx, list, envoygateway.ManagedDataPlanePolicyLabels()); err != nil {
 		return fmt.Errorf("failed to list managed data-plane NetworkPolicies in shoot: %w", err)
 	}
 
-	for _, stale := range stalePolicies(list.Items, desiredNamespaces) {
-		if err := shootClient.Delete(ctx, &stale); client.IgnoreNotFound(err) != nil {
-			return fmt.Errorf("failed to delete stale data-plane NetworkPolicy %s/%s: %w", stale.Namespace, stale.Name, err)
+	for i := range list.Items {
+		policy := &list.Items[i]
+		if err := shootClient.Delete(ctx, policy); client.IgnoreNotFound(err) != nil {
+			return fmt.Errorf("failed to delete managed data-plane NetworkPolicy %s/%s: %w", policy.Namespace, policy.Name, err)
 		}
 	}
 
 	return nil
-}
-
-// stalePolicies returns the existing managed policies whose namespace is not in
-// desiredNamespaces. Pure so the prune decision is unit-testable.
-func stalePolicies(existing []networkingv1.NetworkPolicy, desiredNamespaces []string) []networkingv1.NetworkPolicy {
-	desired := make(map[string]struct{}, len(desiredNamespaces))
-	for _, ns := range desiredNamespaces {
-		desired[ns] = struct{}{}
-	}
-
-	var stale []networkingv1.NetworkPolicy
-	for _, p := range existing {
-		if _, ok := desired[p.Namespace]; !ok {
-			stale = append(stale, p)
-		}
-	}
-
-	return stale
-}
-
-// managedDataPlanePolicyLabels are the labels the extension stamps on the
-// data-plane NetworkPolicies it manages. They scope the prune List precisely to
-// policies this extension owns.
-func managedDataPlanePolicyLabels() client.MatchingLabels {
-	return client.MatchingLabels{
-		envoygateway.LabelManagedBy: envoygateway.LabelManagedByValue,
-		envoygateway.LabelName:      envoygateway.DataPlaneNetworkPolicyName,
-	}
-}
-
-// dataPlaneNetworkPolicy returns the data-plane ingress NetworkPolicy for a
-// single Gateway namespace. It selects the Envoy data-plane proxy pods and
-// allows ingress on the data-plane ports from anywhere: the extension does not
-// know a Gateway's load-balancer scope (internal vs. internet-facing is a
-// user-set Service annotation), and an internal-LB proxy is already unreachable
-// from outside at the network layer, so an empty from grants no extra exposure.
-func dataPlaneNetworkPolicy(namespace string) *networkingv1.NetworkPolicy {
-	tcp := corev1.ProtocolTCP
-
-	return &networkingv1.NetworkPolicy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      envoygateway.DataPlaneNetworkPolicyName,
-			Namespace: namespace,
-			Labels: map[string]string{
-				envoygateway.LabelManagedBy: envoygateway.LabelManagedByValue,
-				envoygateway.LabelName:      envoygateway.DataPlaneNetworkPolicyName,
-			},
-		},
-		Spec: networkingv1.NetworkPolicySpec{
-			PodSelector: metav1.LabelSelector{
-				MatchLabels: map[string]string{
-					envoygateway.LabelManagedBy: envoygateway.EnvoyProxyManagedByValue,
-					envoygateway.LabelName:      envoygateway.EnvoyProxyNameValue,
-				},
-			},
-			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
-			Ingress: []networkingv1.NetworkPolicyIngressRule{{
-				Ports: []networkingv1.NetworkPolicyPort{
-					{Protocol: &tcp, Port: new(intstr.FromInt(envoygateway.DataPlaneHTTPPort))},
-					{Protocol: &tcp, Port: new(intstr.FromInt(envoygateway.DataPlaneHTTPSPort))},
-					{Protocol: &tcp, Port: new(intstr.FromInt(envoygateway.DataPlaneReadyPort))},
-				},
-			}},
-		},
-	}
 }
 
 // kubernetesScheme returns a runtime scheme with the built-in Kubernetes types

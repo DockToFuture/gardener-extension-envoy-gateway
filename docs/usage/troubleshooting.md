@@ -246,3 +246,51 @@ If orphans persist after a reconcile, check the extension controller log for
 best-effort and logs (rather than fails) on error, so a shoot API-server blip
 leaves the orphans for the next reconcile.
 
+## Backend unreachable on a default-deny shoot (proxy is Ready, traffic times out)
+
+Symptoms, with `manageDataPlaneNetworkPolicies: true` on a shoot that enforces a
+default-deny `NetworkPolicy` posture:
+
+- The data-plane Envoy proxy pods are `Ready` (xDS is fine — this is not the
+  [xDS failure above](#data-plane-envoy-pods-cant-reach-the-api-server)).
+- Requests through the `Gateway` nonetheless time out or return `503`, and only
+  for **some** routes/backends — typically the ones whose `backendRef` is not a
+  plain selector-backed `Service`.
+
+**Cause.** The data-plane `NetworkPolicy` controller derives the proxy-egress
+(hop 2) and backend-ingress (hop 3) policies by resolving each route
+`backendRef` to a concrete set of pods **via a `Service` selector**. Backends it
+cannot resolve that way are **skipped silently** (from the shoot owner's point of
+view): no hop-2 egress rule to the backend and no hop-3 ingress policy are
+written, so under default-deny the proxy→backend hop stays blocked. This covers:
+
+- `Service`s **without a `spec.selector`** — headless `Service`s with
+  manually-managed `Endpoints`/`EndpointSlice`s, or `ExternalName` `Service`s.
+- `backendRef`s pointing at something **other than a core `Service`**.
+- A `backendRef` to a `Service` that **does not exist (yet)**.
+- Cross-namespace `backendRef`s without a `ReferenceGrant` in the backend
+  namespace.
+
+This is a documented limitation — see
+[Limitation — not every backend can be derived automatically](./configuration.md#managedataplanenetworkpolicies).
+
+**Where to look.** The skip is logged by the netpol-controller, which runs **on
+the seed** in the shoot's control-plane namespace (not inside the shoot, so a
+shoot owner cannot see it directly). The log line is:
+
+```
+skipping backendRef for data-plane NetworkPolicy derivation   reason=... backend=<ns>/<name> detail=...
+```
+
+The `reason` is one of `NotService`, `SelectorlessService`, `ServiceNotFound`, or
+`NoReferenceGrant`, and `detail` explains the specific case.
+
+**Fix.** For an unresolvable backend you must write the proxy-egress and
+backend-ingress `NetworkPolicy` objects **by hand** — see the worked example in
+[the configuration docs](./configuration.md#managedataplanenetworkpolicies).
+When hand-writing the proxy-egress policy, keep the DNS **and xDS** rules the
+managed policy includes, otherwise you will also cut the proxy off from its
+control plane. For a backend that is simply missing, create the `Service` (and,
+cross-namespace, the `ReferenceGrant`); the next reconcile picks it up.
+
+

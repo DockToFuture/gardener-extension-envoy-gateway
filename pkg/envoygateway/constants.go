@@ -32,6 +32,13 @@ const (
 	// ImageName is the key for the Envoy Gateway controller image in imagevector.
 	ImageName = "envoy-gateway"
 
+	// ExtensionImageName is the image-vector key for this extension's own image.
+	// The netpol-controller subcommand lives in this image (not in the upstream
+	// Envoy Gateway image keyed by ImageName), so the seed-side netpol-controller
+	// Deployment must run it. The chart overwrites this entry with the extension's
+	// actual image at deploy time.
+	ExtensionImageName = "gardener-extension-envoy-gateway"
+
 	// GatewayClassName is the GatewayClass installed by this extension. Users
 	// reference it from their Gateway resources via spec.gatewayClassName.
 	GatewayClassName = "gardener-envoy-gateway"
@@ -62,8 +69,45 @@ const (
 	// DataPlaneNetworkPolicyName is the name of the per-Gateway-namespace
 	// data-plane ingress NetworkPolicy the extension reconciles directly into the
 	// shoot when ManageDataPlaneNetworkPolicies is enabled. It doubles as the
-	// managed-policy label value used to select these policies for pruning.
+	// managed-policy label value used to select these policies for pruning. This
+	// is the hop-1 (client → proxy ingress) policy.
 	DataPlaneNetworkPolicyName = "envoy-gateway-proxies"
+
+	// ProxyEgressNetworkPolicyName is the name of the per-Gateway-namespace
+	// hop-2 (proxy → backend egress) NetworkPolicy. It selects the data-plane
+	// proxy pods and allows egress to DNS plus every resolved route backend.
+	ProxyEgressNetworkPolicyName = "envoy-gateway-proxies-egress"
+
+	// BackendIngressNetworkPolicyPrefix is the name prefix of the per-backend
+	// hop-3 (backend ← proxy ingress) NetworkPolicies written into backend
+	// namespaces. The full name appends a short hash of the Gateway namespace so
+	// multiple Gateways targeting one backend namespace do not collide.
+	BackendIngressNetworkPolicyPrefix = "envoy-gateway-backend"
+
+	// LabelHop is the label key that records which of the three data-plane
+	// network hops a managed NetworkPolicy belongs to. It scopes the prune List
+	// so each hop's reconciliation only removes its own stale policies.
+	LabelHop = "envoy-gateway.extensions.gardener.cloud/hop"
+	// HopProxyIngress, HopProxyEgress, and HopBackendIngress are the [LabelHop]
+	// values for the three managed data-plane hops.
+	HopProxyIngress   = "proxy-ingress"
+	HopProxyEgress    = "proxy-egress"
+	HopBackendIngress = "backend-ingress"
+
+	// DataPlaneDNSPort is the DNS port the proxy egress policy opens (UDP+TCP)
+	// so the proxies can resolve backend Service names.
+	DataPlaneDNSPort = 53
+
+	// XDSPort is the gRPC xDS port the Envoy Gateway control-plane pod serves on.
+	// The data-plane proxies pull their listener/cluster config from it, so the
+	// proxy-egress NetworkPolicy must allow egress to the control plane here and
+	// the control-plane ingress NetworkPolicy must allow it in.
+	XDSPort = 18000
+
+	// MetadataNameLabel is the well-known namespace label kube-apiserver stamps
+	// with each namespace's name; used to scope cross-namespace NetworkPolicy
+	// peers to a single namespace.
+	MetadataNameLabel = "kubernetes.io/metadata.name"
 
 	// DataPlaneHTTPPort is the shifted-up HTTP listener port envoy-gateway
 	// configures for non-root data-plane proxies (Service :80 → targetPort).
@@ -105,8 +149,8 @@ const (
 	// apiVersionRBAC is the RBAC API version used by the deployer.
 	apiVersionRBAC = "rbac.authorization.k8s.io/v1"
 
-	// apiGroupGatewayAPI is the Gateway API resource group.
-	apiGroupGatewayAPI = "gateway.networking.k8s.io"
+	// APIGroupGatewayAPI is the Gateway API resource group.
+	APIGroupGatewayAPI = "gateway.networking.k8s.io"
 	// apiGroupEnvoyGateway is the Envoy Gateway resource group.
 	apiGroupEnvoyGateway = "gateway.envoyproxy.io"
 
@@ -123,6 +167,32 @@ const (
 
 	// labelValueAllowed is the value Gardener's networking NetworkPolicies gate on.
 	labelValueAllowed = "allowed"
+
+	// NetpolControllerName is the base name of the per-shoot data-plane
+	// NetworkPolicy controller: it names the seed Deployment, the shoot
+	// ServiceAccount it authenticates as, and the in-shoot RBAC objects.
+	NetpolControllerName = "envoy-gateway-netpol-controller"
+	// NetpolControllerShootAccessSecretName is the (unprefixed) name of the
+	// shoot-access secret the token-requestor fills for the controller. The
+	// gardener helper prefixes it with "shoot-access-".
+	NetpolControllerShootAccessSecretName = "envoy-gateway-netpol"
+	// NetpolControllerServiceAccountName is the ServiceAccount the controller
+	// authenticates as inside the shoot (lives in kube-system).
+	NetpolControllerServiceAccountName = "envoy-gateway-netpol-controller"
+	// NetpolControllerClusterRoleName is the in-shoot ClusterRole bound to the
+	// controller's ServiceAccount.
+	NetpolControllerClusterRoleName = "envoy-gateway-netpol-controller"
+
+	// LabelToAllShootsKubeAPIServer is the pod label that lets a seed
+	// control-plane pod reach any shoot's kube-apiserver (TCP 443) past the
+	// seed's NetworkPolicies. The netpol controller watches the shoot API, so its
+	// pod carries it.
+	LabelToAllShootsKubeAPIServer = "networking.resources.gardener.cloud/to-all-shoots-kube-apiserver-tcp-443"
+	// LabelToDNS lets a seed pod reach cluster DNS.
+	LabelToDNS = "networking.gardener.cloud/to-dns"
+	// LabelToRuntimeAPIServer lets a seed pod reach the seed (runtime) apiserver,
+	// which hosts the controller's leader-election lease.
+	LabelToRuntimeAPIServer = "networking.gardener.cloud/to-runtime-apiserver"
 
 	// EnvoyProxyManagedByValue and EnvoyProxyNameValue are the canonical labels
 	// envoy-gateway stamps on the data-plane Envoy proxy pods; the extension's
