@@ -113,18 +113,27 @@ func TestBuildResources_EmitsClientAndHMACSecretsWhenPopulated(t *testing.T) {
 	}
 }
 
-func TestHMACSecretBytes_Deterministic(t *testing.T) {
-	a := HMACSecretBytes("shoot--foo--bar")
-	b := HMACSecretBytes("shoot--foo--bar")
-	c := HMACSecretBytes("shoot--foo--baz")
-	if len(a) != 32 {
-		t.Fatalf("expected 32-byte HMAC key, got %d bytes", len(a))
+func TestHMACSecretConfig_GeneratesRandom32ByteKey(t *testing.T) {
+	cfg := &HMACSecretConfig{Name: HMACSecretName}
+
+	a, err := cfg.Generate()
+	if err != nil {
+		t.Fatalf("Generate returned error: %v", err)
 	}
-	if string(a) != string(b) {
-		t.Fatal("HMACSecretBytes not deterministic for the same input")
+	b, err := cfg.Generate()
+	if err != nil {
+		t.Fatalf("Generate returned error: %v", err)
 	}
-	if string(a) == string(c) {
-		t.Fatal("HMACSecretBytes returned the same key for different cluster UIDs")
+
+	keyA := a.SecretData()[HMACSecretKey]
+	keyB := b.SecretData()[HMACSecretKey]
+
+	if len(keyA) != 32 {
+		t.Fatalf("expected 32-byte HMAC key, got %d bytes", len(keyA))
+	}
+
+	if string(keyA) == string(keyB) {
+		t.Fatal("HMACSecretConfig.Generate returned the same key twice; key must be random")
 	}
 }
 

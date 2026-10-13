@@ -5,8 +5,7 @@
 package envoygateway
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
+	"crypto/rand"
 
 	extensionssecretmanager "github.com/gardener/gardener/extensions/pkg/util/secret/manager"
 	secretsutils "github.com/gardener/gardener/pkg/utils/secrets"
@@ -73,17 +72,47 @@ func SecretConfigs() []extensionssecretmanager.SecretConfigWithOptions {
 			},
 			Options: []secretsmanager.GenerateOption{secretsmanager.SignedByCA(CASecretName)},
 		},
+		{
+			Config:  &HMACSecretConfig{Name: HMACSecretName},
+			Options: []secretsmanager.GenerateOption{secretsmanager.Persist()},
+		},
 	}
 }
 
-// HMACSecretBytes returns 32 deterministic bytes derived from the given
-// cluster identifier, suitable for the OIDC HMAC key. Determinism keeps the
-// key stable across reconciles without persisting extra state; the input is
-// the per-shoot Cluster name, so different shoots get different keys.
-func HMACSecretBytes(clusterUID string) []byte {
-	mac := hmac.New(sha256.New, []byte("envoy-gateway-oidc-hmac"))
-	// hash.Hash.Write never returns an error.
-	_, _ = mac.Write([]byte(clusterUID))
+// hmacSecretLength is the length in bytes of the OIDC HMAC signing key. 32
+// bytes (256 bits) matches the HMAC-SHA256 block the Envoy OAuth2 filter uses
+// to sign its state cookies.
+const hmacSecretLength = 32
 
-	return mac.Sum(nil)
+// HMACSecretConfig is a secrets-manager [secretsutils.ConfigInterface] that
+// generates a cryptographically random OIDC HMAC signing key.
+type HMACSecretConfig struct {
+	// Name is the secrets-manager name of the config.
+	Name string
+}
+
+// GetName returns the name of the config.
+func (c *HMACSecretConfig) GetName() string { return c.Name }
+
+// Generate reads hmacSecretLength random bytes and returns them as the HMAC key.
+func (c *HMACSecretConfig) Generate() (secretsutils.DataInterface, error) {
+	key := make([]byte, hmacSecretLength)
+	if _, err := rand.Read(key); err != nil {
+		return nil, err
+	}
+
+	return &hmacKey{key: key}, nil
+}
+
+// hmacKey is the generated-secret counterpart of HMACSecretConfig.
+type hmacKey struct {
+	key []byte
+}
+
+// SecretData returns the key under HMACSecretKey, the data key the deployer
+// ships into the shoot and the Envoy OAuth2 filter reads.
+func (k *hmacKey) SecretData() map[string][]byte {
+	return map[string][]byte{
+		HMACSecretKey: k.key,
+	}
 }

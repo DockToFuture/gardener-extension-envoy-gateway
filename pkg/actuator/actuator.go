@@ -267,7 +267,8 @@ func (a *Actuator) reconcileSecrets(
 	caSecret := generated[envoygateway.CASecretName]
 	serverSecret := generated[envoygateway.XDSServerCertSecretName]
 	clientSecret := generated[envoygateway.EnvoyClientCertSecretName]
-	if caSecret == nil || serverSecret == nil || clientSecret == nil {
+	hmacSecret := generated[envoygateway.HMACSecretName]
+	if caSecret == nil || serverSecret == nil || clientSecret == nil || hmacSecret == nil {
 		return envoygateway.TLSBundle{}, fmt.Errorf("secrets-manager returned an incomplete secret set for %q", clusterName)
 	}
 
@@ -277,10 +278,10 @@ func (a *Actuator) reconcileSecrets(
 		CAPEM:         caSecret.Data[secretsutils.DataKeyCertificateCA],
 		ClientCertPEM: clientSecret.Data[secretsutils.DataKeyCertificate],
 		ClientKeyPEM:  clientSecret.Data[secretsutils.DataKeyPrivateKey],
-		HMACBytes:     envoygateway.HMACSecretBytes(clusterName),
+		HMACBytes:     hmacSecret.Data[envoygateway.HMACSecretKey],
 	}
 	if len(bundle.CertPEM) == 0 || len(bundle.KeyPEM) == 0 || len(bundle.CAPEM) == 0 ||
-		len(bundle.ClientCertPEM) == 0 || len(bundle.ClientKeyPEM) == 0 {
+		len(bundle.ClientCertPEM) == 0 || len(bundle.ClientKeyPEM) == 0 || len(bundle.HMACBytes) == 0 {
 		return envoygateway.TLSBundle{}, fmt.Errorf("secrets-manager returned an incomplete TLS bundle for %q", clusterName)
 	}
 
