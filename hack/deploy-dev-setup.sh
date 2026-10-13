@@ -61,8 +61,8 @@ function _main() {
         "${_YQ}" \
           'select(.kind == "Extension" and .metadata.name == "gardener-extension-envoy-gateway").spec.deployment.extension.values.image.repository |= strenv(IMAGE_REPO) |
            select(.kind == "Extension" and .metadata.name == "gardener-extension-envoy-gateway").spec.deployment.extension.values.image.tag |= strenv(IMAGE_TAG) |
-           select(.kind == "Extension" and .metadata.name == "gardener-extension-envoy-gateway").spec.deployment.admission.runtimeCluster.values.image.repository |= strenv(IMAGE_REPO) |
-           select(.kind == "Extension" and .metadata.name == "gardener-extension-envoy-gateway").spec.deployment.admission.runtimeCluster.values.image.tag |= strenv(IMAGE_TAG)' | \
+           select(.kind == "Extension" and .metadata.name == "gardener-extension-envoy-gateway").spec.deployment.admission.values.image.repository |= strenv(IMAGE_REPO) |
+           select(.kind == "Extension" and .metadata.name == "gardener-extension-envoy-gateway").spec.deployment.admission.values.image.tag |= strenv(IMAGE_TAG)' | \
              kubectl apply --server-side --force-conflicts=true -f -
       ;;
     *)

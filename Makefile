@@ -317,7 +317,7 @@ update-version-tags:  ## Update version tags in helm charts and example resource
 	@env image=$(IMAGE) tag=$(VERSION) \
 		$(GO_TOOL) yq -i '(.spec.deployment.extension.values.image.repository = env(image)) | (.spec.deployment.extension.values.image.tag = env(tag))' $(SRC_ROOT)/examples/operator-extension/patches/extension.yaml
 	@env image=$(IMAGE) tag=$(VERSION) \
-		$(GO_TOOL) yq -i '(.spec.deployment.admission.runtimeCluster.values.image.repository = env(image)) | (.spec.deployment.admission.runtimeCluster.values.image.tag = env(tag))' $(SRC_ROOT)/examples/operator-extension/patches/extension.yaml
+		$(GO_TOOL) yq -i '(.spec.deployment.admission.values.image.repository = env(image)) | (.spec.deployment.admission.values.image.tag = env(tag))' $(SRC_ROOT)/examples/operator-extension/patches/extension.yaml
 
 deploy deploy-operator: export IMAGE=$(LOCAL_REGISTRY)/extensions/$(EXTENSION_NAME)
 
