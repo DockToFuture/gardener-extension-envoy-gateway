@@ -48,8 +48,9 @@ GARDENER_DEV_OPERATOR_CLUSTER ?= gardener-operator-local
 # Name of the kind cluster for local Gardener dev environment
 KIND_CLUSTER ?= $(GARDENER_DEV_CLUSTER)
 
-# Platform for docker build (default to linux/amd64)
-PLATFORM ?= linux/amd64
+# Platform defaults to the host architecture, override to PLATFORM=linux/amd64
+# for release.
+PLATFORM ?= linux/$(shell go env GOARCH)
 
 # Kubernetes code-generator tools
 #
