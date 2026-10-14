@@ -91,18 +91,19 @@ func TestProxyEgressPolicy_SameAndCrossNamespaceBackends(t *testing.T) {
 		t.Errorf("expected hop label %q, got %q", HopProxyEgress, got)
 	}
 
-	// First rule is DNS: a namespaceSelector peer with UDP+TCP 53.
+	// First rule is DNS: a namespaceSelector peer with UDP+TCP on both the
+	// Service port (53) and the CoreDNS container port (8053).
 	// Second rule is xDS egress to the control plane. Then one rule per backend.
 	if len(np.Spec.Egress) != 4 {
 		t.Fatalf("expected 4 egress rules (DNS + xDS + 2 backends), got %d", len(np.Spec.Egress))
 	}
 	dns := np.Spec.Egress[0]
-	if len(dns.Ports) != 2 {
-		t.Errorf("expected 2 DNS ports (UDP+TCP), got %d", len(dns.Ports))
+	if len(dns.Ports) != 4 {
+		t.Errorf("expected 4 DNS ports (UDP+TCP on 53 and 8053), got %d", len(dns.Ports))
 	}
 	for _, p := range dns.Ports {
-		if p.Port == nil || p.Port.IntVal != DataPlaneDNSPort {
-			t.Errorf("expected DNS port %d, got %v", DataPlaneDNSPort, p.Port)
+		if p.Port == nil || (p.Port.IntVal != DataPlaneDNSServicePort && p.Port.IntVal != DataPlaneDNSServerPort) {
+			t.Errorf("expected DNS port %d or %d, got %v", DataPlaneDNSServicePort, DataPlaneDNSServerPort, p.Port)
 		}
 	}
 

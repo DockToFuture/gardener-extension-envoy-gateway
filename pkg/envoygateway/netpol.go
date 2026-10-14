@@ -106,17 +106,23 @@ func DataPlaneProxyIngressPolicy(namespace string) *networkingv1.NetworkPolicy {
 func ProxyEgressPolicy(gatewayNamespace string, backends []BackendTarget) *networkingv1.NetworkPolicy {
 	udp := corev1.ProtocolUDP
 	tcp := corev1.ProtocolTCP
-	dnsPort := ptrIntStr(DataPlaneDNSPort)
+	dnsServicePort := ptrIntStr(DataPlaneDNSServicePort)
+	dnsServerPort := ptrIntStr(DataPlaneDNSServerPort)
 
 	// Two fixed rules (DNS + xDS) plus one per backend.
 	egress := make([]networkingv1.NetworkPolicyEgressRule, 0, 2+len(backends))
 	egress = append(egress,
 		networkingv1.NetworkPolicyEgressRule{
-			// DNS resolution to any namespace (kube-dns / node-local DNS).
+			// DNS resolution to any namespace (kube-dns / node-local DNS). Open
+			// both the Service port (53, node-local-dns) and the CoreDNS container
+			// port (8053) because NetworkPolicy filters on the endpoint port after
+			// Service translation — 53 alone fails on shoots without node-local-dns.
 			To: []networkingv1.NetworkPolicyPeer{{NamespaceSelector: &metav1.LabelSelector{}}},
 			Ports: []networkingv1.NetworkPolicyPort{
-				{Protocol: &udp, Port: dnsPort},
-				{Protocol: &tcp, Port: dnsPort},
+				{Protocol: &udp, Port: dnsServicePort},
+				{Protocol: &tcp, Port: dnsServicePort},
+				{Protocol: &udp, Port: dnsServerPort},
+				{Protocol: &tcp, Port: dnsServerPort},
 			},
 		},
 		networkingv1.NetworkPolicyEgressRule{

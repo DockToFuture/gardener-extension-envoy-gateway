@@ -96,9 +96,18 @@ const (
 	// HopBackendIngress is the [LabelHop] value for the proxy→backend ingress hop.
 	HopBackendIngress = "backend-ingress"
 
-	// DataPlaneDNSPort is the DNS port the proxy egress policy opens (UDP+TCP)
-	// so the proxies can resolve backend Service names.
-	DataPlaneDNSPort = 53
+	// DataPlaneDNSServicePort is the kube-dns Service port (53). The proxy egress
+	// policy opens it (UDP+TCP) for the node-local-dns cache path, where the
+	// node-local-dns pods listen on 53. NetworkPolicy filters on the endpoint
+	// (pod) port after Service translation, so 53 alone is not sufficient on
+	// shoots without node-local-dns — see [DataPlaneDNSServerPort].
+	DataPlaneDNSServicePort = 53
+	// DataPlaneDNSServerPort is the CoreDNS container port (8053). This is the
+	// targetPort behind the kube-dns Service, so in a default-deny namespace the
+	// egress policy must open it for proxies to reach CoreDNS pods directly. Both
+	// 53 and 8053 are opened to match Gardener's own to-dns NetworkPolicy and
+	// cover both the node-local-dns and direct-CoreDNS paths.
+	DataPlaneDNSServerPort = 8053
 
 	// XDSPort is the gRPC xDS port the Envoy Gateway control-plane pod serves on.
 	// The data-plane proxies pull their listener/cluster config from it, so the
