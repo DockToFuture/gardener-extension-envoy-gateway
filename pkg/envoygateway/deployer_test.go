@@ -5,13 +5,16 @@
 package envoygateway
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/gardener/gardener/pkg/utils/imagevector"
 	"github.com/go-logr/logr"
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 
 	"github.com/gardener/gardener-extension-envoy-gateway/pkg/apis/config"
@@ -330,8 +333,69 @@ func TestEnvoyProxyGuard_ProducesPolicyAndBinding(t *testing.T) {
 	if got := len(policy.Spec.Validations); got != 12 {
 		t.Errorf("expected 12 validations, got %d", got)
 	}
+	// FailurePolicy must be Fail: a Fail-open policy would silently admit a
+	// malicious EnvoyProxy whenever the CEL evaluation errors.
+	if policy.Spec.FailurePolicy == nil || *policy.Spec.FailurePolicy != admissionregistrationv1.Fail {
+		t.Errorf("expected FailurePolicy Fail, got %v", policy.Spec.FailurePolicy)
+	}
+	// The binding must Deny: a binding that only Warns/Audits leaves the guard
+	// toothless and still admits the resource.
+	if want := []admissionregistrationv1.ValidationAction{admissionregistrationv1.Deny}; !reflect.DeepEqual(binding.Spec.ValidationActions, want) {
+		t.Errorf("expected validationActions %v, got %v", want, binding.Spec.ValidationActions)
+	}
 	if binding.Spec.PolicyName != policy.Name {
 		t.Errorf("binding policyName %q does not match policy name %q", binding.Spec.PolicyName, policy.Name)
+	}
+	// The binding must exempt kube-system via a NotIn namespaceSelector: that is
+	// where our own control plane lives and where the policy would otherwise
+	// reject the EnvoyProxy we deploy ourselves. A string-contains test cannot
+	// tell NotIn from In, so assert the operator and values structurally.
+	if binding.Spec.MatchResources == nil || binding.Spec.MatchResources.NamespaceSelector == nil {
+		t.Fatal("expected binding to carry a namespaceSelector")
+	}
+	exprs := binding.Spec.MatchResources.NamespaceSelector.MatchExpressions
+	if len(exprs) != 1 {
+		t.Fatalf("expected exactly one namespaceSelector expression, got %d", len(exprs))
+	}
+	if exprs[0].Key != "kubernetes.io/metadata.name" {
+		t.Errorf("expected namespaceSelector key kubernetes.io/metadata.name, got %q", exprs[0].Key)
+	}
+	if exprs[0].Operator != metav1.LabelSelectorOpNotIn {
+		t.Errorf("expected namespaceSelector operator NotIn, got %q", exprs[0].Operator)
+	}
+	if !reflect.DeepEqual(exprs[0].Values, []string{Namespace}) {
+		t.Errorf("expected namespaceSelector values %v, got %v", []string{Namespace}, exprs[0].Values)
+	}
+}
+
+func TestFieldAbsentExpression(t *testing.T) {
+	// Order matters: the null-guard on the workload variable must come first so
+	// the later !has(...) terms never dereference a null, and each nested path
+	// segment must be guarded before the next is accessed.
+	for _, tc := range []struct {
+		workload string
+		field    string
+		want     string
+	}{
+		{
+			workload: "deploy",
+			field:    "patch",
+			want:     "variables.deploy == null || !has(variables.deploy.patch)",
+		},
+		{
+			workload: "daemonset",
+			field:    "pod.volumes",
+			want:     "variables.daemonset == null || !has(variables.daemonset.pod) || !has(variables.daemonset.pod.volumes)",
+		},
+		{
+			workload: "deploy",
+			field:    "container.securityContext",
+			want:     "variables.deploy == null || !has(variables.deploy.container) || !has(variables.deploy.container.securityContext)",
+		},
+	} {
+		if got := fieldAbsentExpression(tc.workload, tc.field); got != tc.want {
+			t.Errorf("fieldAbsentExpression(%q, %q) =\n  %q\nwant\n  %q", tc.workload, tc.field, got, tc.want)
+		}
 	}
 }
 

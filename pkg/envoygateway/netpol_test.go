@@ -66,15 +66,15 @@ func TestDataPlaneProxyIngressPolicy_Spec(t *testing.T) {
 	if got := np.Labels[LabelName]; got != DataPlaneNetworkPolicyName {
 		t.Errorf("expected label name=%q, got %q", DataPlaneNetworkPolicyName, got)
 	}
-	if got := np.Labels[LabelHop]; got != HopProxyIngress {
+	if got := np.Labels[LabelHop]; got != string(HopProxyIngress) {
 		t.Errorf("expected hop label %q, got %q", HopProxyIngress, got)
 	}
 }
 
 func TestProxyEgressPolicy_SameAndCrossNamespaceBackends(t *testing.T) {
 	backends := []BackendTarget{
-		{Namespace: nsTeamA, PodSelector: map[string]string{testAppLabel: "local"}},
-		{Namespace: nsTeamB, PodSelector: map[string]string{testAppLabel: "remote"}},
+		{Namespace: nsTeamA, ServiceName: "local", PodSelector: map[string]string{testAppLabel: "local"}},
+		{Namespace: nsTeamB, ServiceName: "remote", PodSelector: map[string]string{testAppLabel: "remote"}},
 	}
 	np := ProxyEgressPolicy(nsTeamA, backends)
 
@@ -87,7 +87,7 @@ func TestProxyEgressPolicy_SameAndCrossNamespaceBackends(t *testing.T) {
 	if len(np.Spec.PolicyTypes) != 1 || np.Spec.PolicyTypes[0] != networkingv1.PolicyTypeEgress {
 		t.Errorf("expected a single Egress policy type, got %v", np.Spec.PolicyTypes)
 	}
-	if got := np.Labels[LabelHop]; got != HopProxyEgress {
+	if got := np.Labels[LabelHop]; got != string(HopProxyEgress) {
 		t.Errorf("expected hop label %q, got %q", HopProxyEgress, got)
 	}
 
@@ -142,13 +142,14 @@ func TestProxyEgressPolicy_SameAndCrossNamespaceBackends(t *testing.T) {
 }
 
 func TestBackendIngressPolicy_Spec(t *testing.T) {
-	np := BackendIngressPolicy(nsTeamB, nsTeamA, map[string]string{testAppLabel: testBackendName})
+	backend := BackendTarget{Namespace: nsTeamB, ServiceName: testBackendName, PodSelector: map[string]string{testAppLabel: testBackendName}}
+	np := BackendIngressPolicy(backend, nsTeamA)
 
 	if np.Namespace != nsTeamB {
 		t.Errorf("expected policy in backend namespace %q, got %q", nsTeamB, np.Namespace)
 	}
-	if np.Name != BackendIngressPolicyName(nsTeamA) {
-		t.Errorf("expected name %q, got %q", BackendIngressPolicyName(nsTeamA), np.Name)
+	if want := BackendIngressPolicyName(nsTeamA, testBackendName); np.Name != want {
+		t.Errorf("expected name %q, got %q", want, np.Name)
 	}
 	if got := np.Spec.PodSelector.MatchLabels[testAppLabel]; got != testBackendName {
 		t.Errorf("expected podSelector app=backend, got %q", got)
@@ -156,8 +157,13 @@ func TestBackendIngressPolicy_Spec(t *testing.T) {
 	if len(np.Spec.PolicyTypes) != 1 || np.Spec.PolicyTypes[0] != networkingv1.PolicyTypeIngress {
 		t.Errorf("expected a single Ingress policy type, got %v", np.Spec.PolicyTypes)
 	}
-	if got := np.Labels[LabelHop]; got != HopBackendIngress {
+	if got := np.Labels[LabelHop]; got != string(HopBackendIngress) {
 		t.Errorf("expected hop label %q, got %q", HopBackendIngress, got)
+	}
+	// The owning Gateway namespace is recorded in a label so the prune can
+	// select it without parsing the name.
+	if got := np.Labels[LabelGatewayNamespace]; got != nsTeamA {
+		t.Errorf("expected gateway-namespace label %q, got %q", nsTeamA, got)
 	}
 
 	peer := np.Spec.Ingress[0].From[0]
@@ -170,17 +176,28 @@ func TestBackendIngressPolicy_Spec(t *testing.T) {
 }
 
 func TestBackendIngressPolicyName_DistinctPerGatewayNamespace(t *testing.T) {
-	a := BackendIngressPolicyName(nsTeamA)
-	b := BackendIngressPolicyName(nsTeamB)
+	a := BackendIngressPolicyName(nsTeamA, testBackendName)
+	b := BackendIngressPolicyName(nsTeamB, testBackendName)
 	if a == b {
 		t.Fatalf("expected distinct names for distinct Gateway namespaces, both %q", a)
 	}
-	if a != BackendIngressPolicyName(nsTeamA) {
+	if a != BackendIngressPolicyName(nsTeamA, testBackendName) {
 		t.Error("expected the name to be deterministic for the same Gateway namespace")
 	}
 }
 
-func policyIn(ns, name, hop string) networkingv1.NetworkPolicy {
+// Two backend Services in one namespace reached from one Gateway namespace must
+// produce distinct hop-3 policy names, otherwise the second overwrites the
+// first and only one backend ends up admitted.
+func TestBackendIngressPolicyName_DistinctPerBackendService(t *testing.T) {
+	a := BackendIngressPolicyName(nsTeamA, "httpbin-a")
+	b := BackendIngressPolicyName(nsTeamA, "httpbin-b")
+	if a == b {
+		t.Fatalf("expected distinct names for distinct backend Services, both %q", a)
+	}
+}
+
+func policyIn(ns, name string, hop Hop) networkingv1.NetworkPolicy {
 	return networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -224,8 +241,8 @@ func TestStalePolicies_EmptyDesiredDeletesAll(t *testing.T) {
 // namespace, must be keyed independently: dropping one Gateway namespace must
 // prune only its policy, not the sibling that shares the backend namespace.
 func TestStalePolicies_DistinctNamesInOneNamespace(t *testing.T) {
-	nameA := BackendIngressPolicyName(nsTeamA)
-	nameB := BackendIngressPolicyName(nsTeamB)
+	nameA := BackendIngressPolicyName(nsTeamA, testBackendName)
+	nameB := BackendIngressPolicyName(nsTeamB, testBackendName)
 	existing := []networkingv1.NetworkPolicy{
 		policyIn(testBackendName, nameA, HopBackendIngress),
 		policyIn(testBackendName, nameB, HopBackendIngress),

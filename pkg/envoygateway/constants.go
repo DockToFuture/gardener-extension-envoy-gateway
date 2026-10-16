@@ -79,9 +79,10 @@ const (
 	ProxyEgressNetworkPolicyName = "envoy-gateway-proxies-egress"
 
 	// BackendIngressNetworkPolicyPrefix is the name prefix of the per-backend
-	// hop-3 (backend ← proxy ingress) NetworkPolicies written into backend
-	// namespaces. The full name appends a short hash of the Gateway namespace so
-	// multiple Gateways targeting one backend namespace do not collide.
+	// hop-3 (proxy → backend ingress) NetworkPolicies written into backend
+	// namespaces. The full name appends the backend Service name and a short
+	// hash of the Gateway namespace so multiple backends and multiple Gateways
+	// targeting one backend namespace do not collide.
 	BackendIngressNetworkPolicyPrefix = "envoy-gateway-backend"
 
 	// LabelHop is the label key that records which of the three data-plane
@@ -89,12 +90,13 @@ const (
 	// so each hop's reconciliation only removes its own stale policies.
 	LabelHop = "envoy-gateway.extensions.gardener.cloud/hop"
 
-	// HopProxyIngress is the [LabelHop] value for the client→proxy hop.
-	HopProxyIngress = "proxy-ingress"
-	// HopProxyEgress is the [LabelHop] value for the proxy→backend/control-plane hop.
-	HopProxyEgress = "proxy-egress"
-	// HopBackendIngress is the [LabelHop] value for the proxy→backend ingress hop.
-	HopBackendIngress = "backend-ingress"
+	// LabelGatewayNamespace is the label key on a hop-3 NetworkPolicy recording
+	// the Gateway namespace whose proxies the policy admits. Because a single
+	// backend namespace can hold hop-3 policies from several Gateway namespaces
+	// (now one per backend Service, so the name alone no longer identifies the
+	// owner), the prune List is scoped by this label to the policies one Gateway
+	// namespace owns.
+	LabelGatewayNamespace = "envoy-gateway.extensions.gardener.cloud/gateway-namespace"
 
 	// DataPlaneDNSServicePort is the kube-dns Service port (53). The proxy egress
 	// policy opens it (UDP+TCP) for the node-local-dns cache path, where the
@@ -116,8 +118,8 @@ const (
 	XDSPort = 18000
 
 	// MetadataNameLabel is the well-known namespace label kube-apiserver stamps
-	// with each namespace's name; used to scope cross-namespace NetworkPolicy
-	// peers to a single namespace.
+	// on every namespace with that namespace's own name. NetworkPolicy peers use
+	// it in a namespaceSelector to match exactly one namespace by name.
 	MetadataNameLabel = "kubernetes.io/metadata.name"
 
 	// DataPlaneHTTPPort is the shifted-up HTTP listener port envoy-gateway
@@ -229,6 +231,19 @@ const (
 	verbPatch            = "patch"
 	verbDelete           = "delete"
 	verbDeleteCollection = "deletecollection"
+)
+
+// Hop identifies which of the three data-plane network hops a managed
+// NetworkPolicy belongs to. It is the value stored under [LabelHop].
+type Hop string
+
+const (
+	// HopProxyIngress is the [LabelHop] value for the client → proxy hop.
+	HopProxyIngress Hop = "proxy-ingress"
+	// HopProxyEgress is the [LabelHop] value for the proxy → backend/control-plane hop.
+	HopProxyEgress Hop = "proxy-egress"
+	// HopBackendIngress is the [LabelHop] value for the proxy → backend ingress hop.
+	HopBackendIngress Hop = "backend-ingress"
 )
 
 // ValidLogLevels enumerates the log levels accepted by EnvoyGatewayConfig.

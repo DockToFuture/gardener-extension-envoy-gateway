@@ -146,22 +146,15 @@ func (r *Reconciler) mapReferenceGrantToRequests(_ context.Context, rg *gatewayv
 // mapManagedPolicyToRequests maps one of our own managed NetworkPolicies back to
 // the Gateway namespace(s) that must reconcile to restore it. Hop-1 and hop-2
 // policies live in the Gateway namespace, so that namespace is the key. A hop-3
-// policy lives in a backend namespace; its ingress peer names the Gateway
-// namespace via the metadata.name namespaceSelector, which we read back here.
+// policy lives in a backend namespace but records its owning Gateway namespace
+// in the gateway-namespace label, which we read back here.
 func mapManagedPolicyToRequests(_ context.Context, np *networkingv1.NetworkPolicy) []reconcile.Request {
-	switch np.Labels[envoygateway.LabelHop] {
+	switch envoygateway.Hop(np.Labels[envoygateway.LabelHop]) {
 	case envoygateway.HopProxyIngress, envoygateway.HopProxyEgress:
 		return []reconcile.Request{requestFor(np.Namespace)}
 	case envoygateway.HopBackendIngress:
-		for _, rule := range np.Spec.Ingress {
-			for _, peer := range rule.From {
-				if peer.NamespaceSelector == nil {
-					continue
-				}
-				if ns, ok := peer.NamespaceSelector.MatchLabels[envoygateway.MetadataNameLabel]; ok && ns != "" {
-					return []reconcile.Request{requestFor(ns)}
-				}
-			}
+		if ns := np.Labels[envoygateway.LabelGatewayNamespace]; ns != "" {
+			return []reconcile.Request{requestFor(ns)}
 		}
 	default:
 		// Not one of our managed hops; nothing to enqueue.

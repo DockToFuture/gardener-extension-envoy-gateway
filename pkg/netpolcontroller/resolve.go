@@ -163,6 +163,7 @@ func ResolveBackends(ctx context.Context, reader client.Reader, route RouteInfo)
 
 		targets = append(targets, envoygateway.BackendTarget{
 			Namespace:   backendNs,
+			ServiceName: name,
 			PodSelector: copyStringMap(svc.Spec.Selector),
 		})
 	}

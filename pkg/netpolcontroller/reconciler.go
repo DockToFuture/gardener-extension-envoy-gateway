@@ -80,7 +80,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 
 	desiredBackend := make([]client.ObjectKey, 0, len(targets))
 	for _, t := range targets {
-		policy := envoygateway.BackendIngressPolicy(t.Namespace, gatewayNs, t.PodSelector)
+		policy := envoygateway.BackendIngressPolicy(t, gatewayNs)
 		if err := r.apply(ctx, policy); err != nil {
 			return reconcile.Result{}, err
 		}
@@ -88,9 +88,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	}
 
 	// Prune hop-3 policies this Gateway namespace previously produced but no
-	// longer needs (a backend was removed from a route). Hop-3 policies are
-	// named deterministically from the Gateway namespace, so we can select only
-	// the ones this namespace owns.
+	// longer needs (a backend was removed from a route). Hop-3 policies carry a
+	// gateway-namespace label, so we can select exactly the ones this namespace
+	// owns.
 	if err := r.pruneBackendIngress(ctx, gatewayNs, desiredBackend); err != nil {
 		return reconcile.Result{}, err
 	}
@@ -136,7 +136,7 @@ func (r *Reconciler) resolveNamespaceBackends(ctx context.Context, log logr.Logg
 			log.Info("skipping backendRef for data-plane NetworkPolicy derivation", "reason", s.Reason, "backend", s.Namespace+"/"+s.Name, "detail", s.Detail)
 		}
 		for _, t := range resolved {
-			key := t.Namespace + "/" + fmt.Sprint(t.PodSelector)
+			key := t.Namespace + "/" + t.ServiceName
 			if _, ok := seen[key]; ok {
 				continue
 			}
@@ -294,26 +294,18 @@ func (r *Reconciler) pruneNamespace(ctx context.Context, gatewayNs string) error
 }
 
 // pruneBackendIngress removes the hop-3 policies produced by the given Gateway
-// namespace that are not in the desired set. Because the hop-3 name is a
-// deterministic function of the Gateway namespace, every backend-namespace
-// policy carrying that name belongs to this Gateway namespace, so pruning is
-// precise even across many Gateway namespaces sharing a backend namespace.
+// namespace that are not in the desired set. Every hop-3 policy carries a
+// gateway-namespace label, so a label-scoped List returns exactly the policies
+// this Gateway namespace owns — precise even across many Gateway namespaces
+// sharing a backend namespace, and across the several per-Service policies one
+// Gateway namespace now produces per backend namespace.
 func (r *Reconciler) pruneBackendIngress(ctx context.Context, gatewayNs string, desired []client.ObjectKey) error {
 	list := &networkingv1.NetworkPolicyList{}
-	if err := r.ShootClient.List(ctx, list, envoygateway.ManagedHopPolicyLabels(envoygateway.HopBackendIngress)); err != nil {
+	if err := r.ShootClient.List(ctx, list, envoygateway.ManagedBackendIngressLabels(gatewayNs)); err != nil {
 		return fmt.Errorf("failed to list hop-3 NetworkPolicies: %w", err)
 	}
 
-	wantName := envoygateway.BackendIngressPolicyName(gatewayNs)
-	// Restrict the candidate set to the policies this Gateway namespace owns.
-	owned := make([]networkingv1.NetworkPolicy, 0, len(list.Items))
-	for _, p := range list.Items {
-		if p.Name == wantName {
-			owned = append(owned, p)
-		}
-	}
-
-	for _, stale := range envoygateway.StalePolicies(owned, desired) {
+	for _, stale := range envoygateway.StalePolicies(list.Items, desired) {
 		if err := r.ShootClient.Delete(ctx, &stale); client.IgnoreNotFound(err) != nil {
 			return fmt.Errorf("failed to delete stale hop-3 NetworkPolicy %s/%s: %w", stale.Namespace, stale.Name, err)
 		}

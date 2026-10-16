@@ -16,12 +16,15 @@ import (
 )
 
 // BackendTarget identifies a route backend the data-plane proxies must be
-// allowed to reach: the namespace the backend lives in and the pod selector
-// copied from the backing Service's spec.selector.
+// allowed to reach: the namespace and name of the backing Service and the pod
+// selector copied from its spec.selector.
 type BackendTarget struct {
 	// Namespace is the namespace the backend pods live in. For a same-namespace
 	// backendRef this equals the Gateway namespace.
 	Namespace string
+	// ServiceName is the name of the backing Service. It is part of the hop-3
+	// policy name so distinct backends in one namespace get distinct policies.
+	ServiceName string
 	// PodSelector is a copy of the backing Service's spec.selector, used to
 	// select the backend pods in NetworkPolicy peers.
 	PodSelector map[string]string
@@ -42,11 +45,11 @@ func proxyPodSelector() metav1.LabelSelector {
 // NetworkPolicy it manages for the given hop. LabelName carries the policy's
 // name so the control-plane NetworkPolicy and the three data-plane hops stay
 // individually selectable; LabelHop scopes a prune to a single hop.
-func managedLabels(name, hop string) map[string]string {
+func managedLabels(name string, hop Hop) map[string]string {
 	return map[string]string{
 		LabelManagedBy: LabelManagedByValue,
 		LabelName:      name,
-		LabelHop:       hop,
+		LabelHop:       string(hop),
 	}
 }
 
@@ -57,13 +60,17 @@ func ManagedDataPlanePolicyLabels() client.MatchingLabels {
 	return client.MatchingLabels{LabelManagedBy: LabelManagedByValue}
 }
 
-// ManagedHopPolicyLabels is the label selector matching the data-plane
-// NetworkPolicies this extension manages for a single hop. It scopes a prune
-// List so one hop's reconciliation never removes another hop's policies.
-func ManagedHopPolicyLabels(hop string) client.MatchingLabels {
+// ManagedBackendIngressLabels is the label selector matching the hop-3
+// NetworkPolicies this extension manages on behalf of a single Gateway
+// namespace. Because a backend namespace may hold hop-3 policies from several
+// Gateway namespaces — and, now that each backend Service gets its own policy,
+// several per Gateway namespace — the prune List is scoped by both the hop and
+// the owning Gateway namespace.
+func ManagedBackendIngressLabels(gatewayNamespace string) client.MatchingLabels {
 	return client.MatchingLabels{
-		LabelManagedBy: LabelManagedByValue,
-		LabelHop:       hop,
+		LabelManagedBy:        LabelManagedByValue,
+		LabelHop:              string(HopBackendIngress),
+		LabelGatewayNamespace: gatewayNamespace,
 	}
 }
 
@@ -173,21 +180,27 @@ func ProxyEgressPolicy(gatewayNamespace string, backends []BackendTarget) *netwo
 	}
 }
 
-// BackendIngressPolicy returns the hop-3 (backend ← proxy) ingress
+// BackendIngressPolicy returns the hop-3 (proxy → backend ingress)
 // NetworkPolicy written into a backend namespace. It selects the backend pods
 // (via the copied Service selector) and allows ingress from the data-plane
-// proxy pods in the given Gateway namespace. The name embeds a short hash of
-// the Gateway namespace so several Gateways targeting one backend namespace
-// produce distinct, independently-pruneable policies.
-func BackendIngressPolicy(backendNamespace, gatewayNamespace string, podSelector map[string]string) *networkingv1.NetworkPolicy {
+// proxy pods in the given Gateway namespace. The name embeds the backend
+// Service name and a short hash of the Gateway namespace so distinct backends,
+// and several Gateways targeting one backend namespace, produce distinct,
+// independently-pruneable policies. The owning Gateway namespace is also
+// recorded in a label so a prune can select every policy one Gateway namespace
+// owns without parsing names.
+func BackendIngressPolicy(backend BackendTarget, gatewayNamespace string) *networkingv1.NetworkPolicy {
+	labels := managedLabels(BackendIngressNetworkPolicyPrefix, HopBackendIngress)
+	labels[LabelGatewayNamespace] = gatewayNamespace
+
 	return &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      BackendIngressPolicyName(gatewayNamespace),
-			Namespace: backendNamespace,
-			Labels:    managedLabels(BackendIngressNetworkPolicyPrefix, HopBackendIngress),
+			Name:      BackendIngressPolicyName(gatewayNamespace, backend.ServiceName),
+			Namespace: backend.Namespace,
+			Labels:    labels,
 		},
 		Spec: networkingv1.NetworkPolicySpec{
-			PodSelector: metav1.LabelSelector{MatchLabels: podSelector},
+			PodSelector: metav1.LabelSelector{MatchLabels: backend.PodSelector},
 			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
 			Ingress: []networkingv1.NetworkPolicyIngressRule{{
 				From: []networkingv1.NetworkPolicyPeer{{
@@ -200,12 +213,14 @@ func BackendIngressPolicy(backendNamespace, gatewayNamespace string, podSelector
 }
 
 // BackendIngressPolicyName returns the deterministic name of the hop-3 policy
-// for proxies originating in the given Gateway namespace. The 8-hex-char suffix
-// keeps the name DNS-safe and collision-resistant across Gateway namespaces.
-func BackendIngressPolicyName(gatewayNamespace string) string {
+// for the given backend Service reached by proxies originating in the given
+// Gateway namespace. The 8-hex-char suffix hashes the Gateway namespace to keep
+// the name DNS-safe and collision-resistant across Gateway namespaces; the
+// Service name keeps distinct backends in one namespace distinct.
+func BackendIngressPolicyName(gatewayNamespace, serviceName string) string {
 	sum := sha256.Sum256([]byte(gatewayNamespace))
 
-	return BackendIngressNetworkPolicyPrefix + "-" + hex.EncodeToString(sum[:])[:8]
+	return BackendIngressNetworkPolicyPrefix + "-" + serviceName + "-" + hex.EncodeToString(sum[:])[:8]
 }
 
 // StalePolicies returns the existing managed policies whose (namespace, name)

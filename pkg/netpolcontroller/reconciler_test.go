@@ -111,7 +111,7 @@ func TestReconcileSameNamespaceBackend(t *testing.T) {
 	}
 
 	// Hop 3 (ingress) in the backend namespace (== Gateway namespace here).
-	hop3Name := envoygateway.BackendIngressPolicyName(testNsGateway)
+	hop3Name := envoygateway.BackendIngressPolicyName(testNsGateway, testBackendName)
 	hop3 := getPolicy(t, cl, testNsGateway, hop3Name)
 	if hop3 == nil {
 		t.Fatal("hop-3 backend ingress policy was not created")
@@ -144,7 +144,7 @@ func TestReconcileCrossNamespaceBackendRequiresGrant(t *testing.T) {
 	if _, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: nsName()}); err != nil {
 		t.Fatalf("reconcile failed: %v", err)
 	}
-	if np := getPolicy(t, cl, backendNs, envoygateway.BackendIngressPolicyName(testNsGateway)); np != nil {
+	if np := getPolicy(t, cl, backendNs, envoygateway.BackendIngressPolicyName(testNsGateway, testBackendName)); np != nil {
 		t.Fatal("hop-3 policy must not be created without a ReferenceGrant")
 	}
 	egress := getPolicy(t, cl, testNsGateway, envoygateway.ProxyEgressNetworkPolicyName)
@@ -165,7 +165,7 @@ func TestReconcileCrossNamespaceBackendRequiresGrant(t *testing.T) {
 	if _, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: nsName()}); err != nil {
 		t.Fatalf("reconcile failed: %v", err)
 	}
-	if np := getPolicy(t, cl, backendNs, envoygateway.BackendIngressPolicyName(testNsGateway)); np == nil {
+	if np := getPolicy(t, cl, backendNs, envoygateway.BackendIngressPolicyName(testNsGateway, testBackendName)); np == nil {
 		t.Fatal("hop-3 policy must be created once a ReferenceGrant permits the backend")
 	}
 }
@@ -177,7 +177,7 @@ func TestReconcilePrunesNamespaceWithoutGateway(t *testing.T) {
 	// object now lives in gw-ns.
 	hop1 := envoygateway.DataPlaneProxyIngressPolicy(testNsGateway)
 	hop2 := envoygateway.ProxyEgressPolicy(testNsGateway, nil)
-	hop3 := envoygateway.BackendIngressPolicy(testNsBackend, testNsGateway, map[string]string{testAppLabel: testBackendName})
+	hop3 := envoygateway.BackendIngressPolicy(envoygateway.BackendTarget{Namespace: testNsBackend, ServiceName: testBackendName, PodSelector: map[string]string{testAppLabel: testBackendName}}, testNsGateway)
 
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(hop1, hop2, hop3).Build()
 	r := &Reconciler{ShootClient: cl}
@@ -192,7 +192,7 @@ func TestReconcilePrunesNamespaceWithoutGateway(t *testing.T) {
 	if np := getPolicy(t, cl, testNsGateway, envoygateway.ProxyEgressNetworkPolicyName); np != nil {
 		t.Error("hop-2 policy should have been pruned")
 	}
-	if np := getPolicy(t, cl, testNsBackend, envoygateway.BackendIngressPolicyName(testNsGateway)); np != nil {
+	if np := getPolicy(t, cl, testNsBackend, envoygateway.BackendIngressPolicyName(testNsGateway, testBackendName)); np != nil {
 		t.Error("hop-3 policy should have been pruned")
 	}
 }
@@ -244,8 +244,8 @@ func TestReconcilePrunesStaleBackendOnRouteChange(t *testing.T) {
 	if _, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: nsName()}); err != nil {
 		t.Fatalf("reconcile failed: %v", err)
 	}
-	// Only one hop-3 policy name exists per Gateway namespace; it must be present.
-	if np := getPolicy(t, cl, testNsGateway, envoygateway.BackendIngressPolicyName(testNsGateway)); np == nil {
+	// Only one backend ("backend-a") is routed; its hop-3 policy must be present.
+	if np := getPolicy(t, cl, testNsGateway, envoygateway.BackendIngressPolicyName(testNsGateway, "backend-a")); np == nil {
 		t.Fatal("hop-3 policy for the single backend should exist")
 	}
 
@@ -263,7 +263,7 @@ func TestReconcilePrunesStaleBackendOnRouteChange(t *testing.T) {
 	if _, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: nsName()}); err != nil {
 		t.Fatalf("second reconcile failed: %v", err)
 	}
-	if np := getPolicy(t, cl, testNsGateway, envoygateway.BackendIngressPolicyName(testNsGateway)); np != nil {
+	if np := getPolicy(t, cl, testNsGateway, envoygateway.BackendIngressPolicyName(testNsGateway, "backend-a")); np != nil {
 		t.Fatal("hop-3 policy should have been pruned after the route lost its backend")
 	}
 }

@@ -205,7 +205,7 @@ func TestMapManagedPolicyToRequests(t *testing.T) {
 			policy: &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{
 				Name:      envoygateway.DataPlaneNetworkPolicyName,
 				Namespace: testNsGateway,
-				Labels:    map[string]string{envoygateway.LabelHop: envoygateway.HopProxyIngress},
+				Labels:    map[string]string{envoygateway.LabelHop: string(envoygateway.HopProxyIngress)},
 			}},
 			want: []string{testNsGateway},
 		},
@@ -214,37 +214,31 @@ func TestMapManagedPolicyToRequests(t *testing.T) {
 			policy: &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{
 				Name:      envoygateway.ProxyEgressNetworkPolicyName,
 				Namespace: testNsGateway,
-				Labels:    map[string]string{envoygateway.LabelHop: envoygateway.HopProxyEgress},
+				Labels:    map[string]string{envoygateway.LabelHop: string(envoygateway.HopProxyEgress)},
 			}},
 			want: []string{testNsGateway},
 		},
 		{
-			name: "hop-3 backend ingress maps back to the Gateway namespace from its ingress peer",
+			name: "hop-3 backend ingress maps back to the Gateway namespace from its label",
 			policy: &networkingv1.NetworkPolicy{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      envoygateway.BackendIngressPolicyName(testNsGateway),
+					Name:      envoygateway.BackendIngressPolicyName(testNsGateway, testBackendName),
 					Namespace: testNsBackend,
-					Labels:    map[string]string{envoygateway.LabelHop: envoygateway.HopBackendIngress},
-				},
-				Spec: networkingv1.NetworkPolicySpec{
-					Ingress: []networkingv1.NetworkPolicyIngressRule{{
-						From: []networkingv1.NetworkPolicyPeer{{
-							NamespaceSelector: &metav1.LabelSelector{
-								MatchLabels: map[string]string{envoygateway.MetadataNameLabel: testNsGateway},
-							},
-						}},
-					}},
+					Labels: map[string]string{
+						envoygateway.LabelHop:              string(envoygateway.HopBackendIngress),
+						envoygateway.LabelGatewayNamespace: testNsGateway,
+					},
 				},
 			},
 			want: []string{testNsGateway},
 		},
 		{
-			name: "hop-3 without a namespace-named peer yields nothing",
+			name: "hop-3 without a gateway-namespace label yields nothing",
 			policy: &networkingv1.NetworkPolicy{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      envoygateway.BackendIngressPolicyName(testNsGateway),
+					Name:      envoygateway.BackendIngressPolicyName(testNsGateway, testBackendName),
 					Namespace: testNsBackend,
-					Labels:    map[string]string{envoygateway.LabelHop: envoygateway.HopBackendIngress},
+					Labels:    map[string]string{envoygateway.LabelHop: string(envoygateway.HopBackendIngress)},
 				},
 			},
 			want: []string{},
@@ -305,7 +299,7 @@ func TestManagedPolicyPredicate(t *testing.T) {
 
 	managed := &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{
 		envoygateway.LabelManagedBy: envoygateway.LabelManagedByValue,
-		envoygateway.LabelHop:       envoygateway.HopProxyIngress,
+		envoygateway.LabelHop:       string(envoygateway.HopProxyIngress),
 	}}}
 	foreign := &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{
 		envoygateway.LabelManagedBy: "someone-else",
