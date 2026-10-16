@@ -18,6 +18,9 @@ const (
 
 	testAppLabel    = "app"
 	testBackendName = "backend"
+
+	testSvcLocal  = "local"
+	testSvcRemote = "remote"
 )
 
 func TestDataPlaneProxyIngressPolicy_Spec(t *testing.T) {
@@ -73,8 +76,8 @@ func TestDataPlaneProxyIngressPolicy_Spec(t *testing.T) {
 
 func TestProxyEgressPolicy_SameAndCrossNamespaceBackends(t *testing.T) {
 	backends := []BackendTarget{
-		{Namespace: nsTeamA, ServiceName: "local", PodSelector: map[string]string{testAppLabel: "local"}},
-		{Namespace: nsTeamB, ServiceName: "remote", PodSelector: map[string]string{testAppLabel: "remote"}},
+		{Namespace: nsTeamA, ServiceName: testSvcLocal, PodSelector: map[string]string{testAppLabel: testSvcLocal}},
+		{Namespace: nsTeamB, ServiceName: testSvcRemote, PodSelector: map[string]string{testAppLabel: testSvcRemote}},
 	}
 	np := ProxyEgressPolicy(nsTeamA, backends)
 
@@ -124,7 +127,7 @@ func TestProxyEgressPolicy_SameAndCrossNamespaceBackends(t *testing.T) {
 	if local.To[0].NamespaceSelector != nil {
 		t.Error("expected same-namespace backend peer to omit a namespaceSelector")
 	}
-	if got := local.To[0].PodSelector.MatchLabels[testAppLabel]; got != "local" {
+	if got := local.To[0].PodSelector.MatchLabels[testAppLabel]; got != testSvcLocal {
 		t.Errorf("expected same-ns podSelector app=local, got %q", got)
 	}
 
@@ -136,7 +139,7 @@ func TestProxyEgressPolicy_SameAndCrossNamespaceBackends(t *testing.T) {
 	if got := remote.To[0].NamespaceSelector.MatchLabels[MetadataNameLabel]; got != nsTeamB {
 		t.Errorf("expected cross-ns namespaceSelector metadata.name=%q, got %q", nsTeamB, got)
 	}
-	if got := remote.To[0].PodSelector.MatchLabels[testAppLabel]; got != "remote" {
+	if got := remote.To[0].PodSelector.MatchLabels[testAppLabel]; got != testSvcRemote {
 		t.Errorf("expected cross-ns podSelector app=remote, got %q", got)
 	}
 }

@@ -231,10 +231,11 @@ func TestReconcileSelfHealRecreatesDeletedPolicy(t *testing.T) {
 
 func TestReconcilePrunesStaleBackendOnRouteChange(t *testing.T) {
 	scheme := reconcilerTestScheme(t)
+	const routedBackend = "backend-a"
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
 		managedGateway(),
-		httpRoute("backend-a", nil),
-		selectorService("backend-a", testNsGateway, map[string]string{testAppLabel: "a"}),
+		httpRoute(routedBackend, nil),
+		selectorService(routedBackend, testNsGateway, map[string]string{testAppLabel: "a"}),
 		selectorService("backend-b", testNsGateway, map[string]string{testAppLabel: "b"}),
 	).Build()
 
@@ -245,7 +246,7 @@ func TestReconcilePrunesStaleBackendOnRouteChange(t *testing.T) {
 		t.Fatalf("reconcile failed: %v", err)
 	}
 	// Only one backend ("backend-a") is routed; its hop-3 policy must be present.
-	if np := getPolicy(t, cl, testNsGateway, envoygateway.BackendIngressPolicyName(testNsGateway, "backend-a")); np == nil {
+	if np := getPolicy(t, cl, testNsGateway, envoygateway.BackendIngressPolicyName(testNsGateway, routedBackend)); np == nil {
 		t.Fatal("hop-3 policy for the single backend should exist")
 	}
 
@@ -263,7 +264,7 @@ func TestReconcilePrunesStaleBackendOnRouteChange(t *testing.T) {
 	if _, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: nsName()}); err != nil {
 		t.Fatalf("second reconcile failed: %v", err)
 	}
-	if np := getPolicy(t, cl, testNsGateway, envoygateway.BackendIngressPolicyName(testNsGateway, "backend-a")); np != nil {
+	if np := getPolicy(t, cl, testNsGateway, envoygateway.BackendIngressPolicyName(testNsGateway, routedBackend)); np != nil {
 		t.Fatal("hop-3 policy should have been pruned after the route lost its backend")
 	}
 }
