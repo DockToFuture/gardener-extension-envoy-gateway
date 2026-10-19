@@ -1,0 +1,148 @@
+# Scenario 08 — Gateway in one namespace; two HTTPRoutes AND two Services in another.
+# Exercises : route-attachment cross-namespace axis with two backends.
+#   route attach = CROSS-ns (routes in s08-be -> Gateway in s08) -> requires allowedRoutes All
+#   backendRef   = same-ns (routes + Services all in s08-be) -> no ReferenceGrant needed
+#   backends/ns  = 2 (both in s08-be)
+# Ingredients: default-deny in BOTH namespaces; Gateway allowedRoutes from: All;
+#              parentRefs name namespace: s08; path split /a, /b.
+# Expected   : BOTH httpbin-a and httpbin-b in s08-be reachable.
+# KNOWN BUGS : (1) cross-namespace route discovery — routes in s08-be are never seen; AND
+#              (2) hop-3 same-namespace collision — both backends in s08-be would collide even
+#                  after (1) is fixed. This scenario needs BOTH controller fixes to go green.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: s08
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: s08-be
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: s08
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: s08-be
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: httpbin-a
+  namespace: s08-be
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: httpbin-a }
+  template:
+    metadata:
+      labels: { app: httpbin-a }
+    spec:
+      containers:
+        - name: httpbin
+          image: mccutchen/go-httpbin:v2.15.0
+          ports:
+            - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: httpbin-a
+  namespace: s08-be
+spec:
+  selector: { app: httpbin-a }
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: httpbin-b
+  namespace: s08-be
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: httpbin-b }
+  template:
+    metadata:
+      labels: { app: httpbin-b }
+    spec:
+      containers:
+        - name: httpbin
+          image: mccutchen/go-httpbin:v2.15.0
+          ports:
+            - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: httpbin-b
+  namespace: s08-be
+spec:
+  selector: { app: httpbin-b }
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: demo-gw
+  namespace: s08
+spec:
+  gatewayClassName: gardener-envoy-gateway
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: All
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: httpbin-a
+  namespace: s08-be
+spec:
+  parentRefs:
+    - name: demo-gw
+      namespace: s08
+  rules:
+    - matches:
+        - path: { type: PathPrefix, value: /a }
+      backendRefs:
+        - name: httpbin-a
+          port: 80
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: httpbin-b
+  namespace: s08-be
+spec:
+  parentRefs:
+    - name: demo-gw
+      namespace: s08
+  rules:
+    - matches:
+        - path: { type: PathPrefix, value: /b }
+      backendRefs:
+        - name: httpbin-b
+          port: 80

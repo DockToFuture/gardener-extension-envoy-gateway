@@ -1,0 +1,175 @@
+# Scenario 15 — two Gateways (in two namespaces) sharing ONE backend namespace.
+# Exercises : that each Gateway namespace produces its OWN backend-ingress policy in a shared
+#             backend namespace (names are keyed per Gateway namespace), so they coexist and prune
+#             independently.
+#   Gateway gw-a in s15-a, Gateway gw-b in s15-b, one backend namespace s15-be.
+#   route-a in s15-a -> httpbin in s15-be (same-ns attach, cross-ns backendRef) -> ReferenceGrant
+#   route-b in s15-b -> httpbin in s15-be (same-ns attach, cross-ns backendRef) -> ReferenceGrant
+#   backends/ns  = 1 shared backend, reached by two Gateway namespaces
+# Ingredients: default-deny in all three namespaces; both Gateways allowedRoutes from: Same;
+#              a ReferenceGrant in s15-be for each Gateway namespace.
+# Expected   : httpbin in s15-be reachable through BOTH Gateways; s15-be holds two distinct
+#              backend-ingress policies, one per Gateway namespace.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: s15-a
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: s15-b
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: s15-be
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: s15-a
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: s15-b
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: s15-be
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: httpbin
+  namespace: s15-be
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: httpbin }
+  template:
+    metadata:
+      labels: { app: httpbin }
+    spec:
+      containers:
+        - name: httpbin
+          image: mccutchen/go-httpbin:v2.15.0
+          ports:
+            - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: httpbin
+  namespace: s15-be
+spec:
+  selector: { app: httpbin }
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: gw-a
+  namespace: s15-a
+spec:
+  gatewayClassName: gardener-envoy-gateway
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: Same
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: gw-b
+  namespace: s15-b
+spec:
+  gatewayClassName: gardener-envoy-gateway
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: Same
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: httpbin
+  namespace: s15-a
+spec:
+  parentRefs:
+    - name: gw-a
+  rules:
+    - matches:
+        - path: { type: PathPrefix, value: / }
+      backendRefs:
+        - name: httpbin
+          namespace: s15-be
+          port: 80
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: httpbin
+  namespace: s15-b
+spec:
+  parentRefs:
+    - name: gw-b
+  rules:
+    - matches:
+        - path: { type: PathPrefix, value: / }
+      backendRefs:
+        - name: httpbin
+          namespace: s15-be
+          port: 80
+---
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: allow-routes-from-s15-a
+  namespace: s15-be
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: s15-a
+  to:
+    - group: ""
+      kind: Service
+---
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: allow-routes-from-s15-b
+  namespace: s15-be
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: s15-b
+  to:
+    - group: ""
+      kind: Service
