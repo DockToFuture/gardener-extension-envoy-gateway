@@ -1,0 +1,114 @@
+# Scenario 04 — Gateway + HTTPRoute in one namespace, Service in another (cross-namespace backendRef).
+# Exercises : the backendRef cross-namespace axis (route ns != backend ns).
+#   route attach = same-ns (route + Gateway in s04)
+#   backendRef   = CROSS-ns (route in s04 -> Service in s04-be) -> requires a ReferenceGrant
+#   backends/ns  = 1
+# Ingredients: default-deny in BOTH namespaces; Gateway allowedRoutes from: Same;
+#              ReferenceGrant in s04-be permitting HTTPRoute(s04) -> Service.
+# Expected   : httpbin in s04-be reachable through the Gateway in s04.
+# NEGATIVE    : delete the ReferenceGrant -> Envoy marks the ref unresolved AND the controller
+#              skips the backend (ReasonNoReferenceGrant) -> no hop-3 policy -> not reachable.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: s04
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: s04-be
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: s04
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: s04-be
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: httpbin
+  namespace: s04-be
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: httpbin }
+  template:
+    metadata:
+      labels: { app: httpbin }
+    spec:
+      containers:
+        - name: httpbin
+          image: mccutchen/go-httpbin:v2.15.0
+          ports:
+            - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: httpbin
+  namespace: s04-be
+spec:
+  selector: { app: httpbin }
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: demo-gw
+  namespace: s04
+spec:
+  gatewayClassName: gardener-envoy-gateway
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: Same
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: httpbin
+  namespace: s04
+spec:
+  parentRefs:
+    - name: demo-gw
+  rules:
+    - matches:
+        - path: { type: PathPrefix, value: / }
+      backendRefs:
+        - name: httpbin
+          namespace: s04-be
+          port: 80
+---
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: allow-routes-from-s04
+  namespace: s04-be
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: s04
+  to:
+    - group: ""
+      kind: Service

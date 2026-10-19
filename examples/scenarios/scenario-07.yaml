@@ -1,0 +1,102 @@
+# Scenario 07 — Gateway in one namespace; HTTPRoute AND Service in another (cross-namespace ATTACH).
+# Exercises : the route-attachment cross-namespace axis (route ns != Gateway ns). This is the
+#             shape that first exposed the controller gap (former demo-3.yaml).
+#   route attach = CROSS-ns (route in s07-be -> Gateway in s07) -> requires Gateway allowedRoutes All
+#   backendRef   = same-ns (route + Service both in s07-be) -> no ReferenceGrant needed
+#   backends/ns  = 1
+# Ingredients: default-deny in BOTH namespaces; Gateway allowedRoutes from: All;
+#              HTTPRoute parentRef names namespace: s07.
+# Expected   : httpbin in s07-be reachable through the Gateway in s07.
+# KNOWN BUG  : the controller lists routes only in the Gateway's namespace, so a route that
+#              attaches from another namespace is never discovered -> no proxy->backend egress
+#              rule and no backend-ingress policy -> not reachable under default-deny.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: s07
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: s07-be
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: s07
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: s07-be
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: httpbin
+  namespace: s07-be
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: httpbin }
+  template:
+    metadata:
+      labels: { app: httpbin }
+    spec:
+      containers:
+        - name: httpbin
+          image: mccutchen/go-httpbin:v2.15.0
+          ports:
+            - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: httpbin
+  namespace: s07-be
+spec:
+  selector: { app: httpbin }
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: demo-gw
+  namespace: s07
+spec:
+  gatewayClassName: gardener-envoy-gateway
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: All
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: httpbin
+  namespace: s07-be
+spec:
+  parentRefs:
+    - name: demo-gw
+      namespace: s07
+  rules:
+    - matches:
+        - path: { type: PathPrefix, value: / }
+      backendRefs:
+        - name: httpbin
+          port: 80

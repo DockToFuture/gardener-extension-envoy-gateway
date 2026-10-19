@@ -1,0 +1,127 @@
+# Scenario 14 — selectorless (hand-managed) backend Service.
+# Exercises : that the controller SKIPS a Service with no spec.selector — it cannot derive a pod
+#             selector, so it writes no backend-ingress policy and leaves the path to the operator.
+#   route attach = same-ns (route + Gateway in s14)
+#   backendRef   = same-ns (route -> selectorless Service in s14)
+#   backends/ns  = 1 (selectorless)
+# Ingredients: default-deny in s14; Gateway allowedRoutes from: Same; a Service WITHOUT a selector
+#              plus a manually-managed EndpointSlice; the operator-written allow policy below.
+# Expected   : controller derives NO policy for this Service. Reachability depends entirely on the
+#              hand-written NetworkPolicy (allow-proxy-to-httpbin) shipped in this manifest.
+# NOTE       : the EndpointSlice addresses must be managed out-of-band (shown here as a placeholder);
+#              fill with the backing pod IPs for a live run.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: s14
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: s14
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: httpbin
+  namespace: s14
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: httpbin }
+  template:
+    metadata:
+      labels: { app: httpbin }
+    spec:
+      containers:
+        - name: httpbin
+          image: mccutchen/go-httpbin:v2.15.0
+          ports:
+            - containerPort: 8080
+---
+# Selectorless Service: no spec.selector, so Kubernetes does not auto-populate EndpointSlices and
+# the controller cannot read a pod selector from it.
+apiVersion: v1
+kind: Service
+metadata:
+  name: httpbin
+  namespace: s14
+spec:
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+---
+# Hand-managed EndpointSlice wiring the selectorless Service to the backing pods. Addresses are a
+# placeholder — manage them out-of-band (fill with the httpbin pod IPs for a live run).
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: httpbin-manual
+  namespace: s14
+  labels:
+    kubernetes.io/service-name: httpbin
+addressType: IPv4
+ports:
+  - name: http
+    port: 8080
+    protocol: TCP
+endpoints:
+  - addresses:
+      - "10.0.0.1"   # placeholder: replace with the real httpbin pod IP(s)
+---
+# Operator-written backend-ingress policy — what the controller would otherwise have generated.
+# Required because the controller skips selectorless Services.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-proxy-to-httpbin
+  namespace: s14
+spec:
+  podSelector:
+    matchLabels: { app: httpbin }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: s14 }
+          podSelector:
+            matchLabels: { gateway.envoyproxy.io/owning-gateway-namespace: s14 }
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: demo-gw
+  namespace: s14
+spec:
+  gatewayClassName: gardener-envoy-gateway
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: Same
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: httpbin
+  namespace: s14
+spec:
+  parentRefs:
+    - name: demo-gw
+  rules:
+    - matches:
+        - path: { type: PathPrefix, value: / }
+      backendRefs:
+        - name: httpbin
+          port: 80
