@@ -12,6 +12,7 @@ import (
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 
 	managercmd "github.com/gardener/gardener-extension-envoy-gateway/cmd/extension-envoy-gateway/internal/manager"
+	netpolcontrollercmd "github.com/gardener/gardener-extension-envoy-gateway/cmd/extension-envoy-gateway/internal/netpolcontroller"
 	webhookcmd "github.com/gardener/gardener-extension-envoy-gateway/cmd/extension-envoy-gateway/webhook"
 	"github.com/gardener/gardener-extension-envoy-gateway/pkg/version"
 )
@@ -25,6 +26,7 @@ func main() {
 		Commands: []*cli.Command{
 			managercmd.New(),
 			webhookcmd.New(),
+			netpolcontrollercmd.New(),
 		},
 	}
 

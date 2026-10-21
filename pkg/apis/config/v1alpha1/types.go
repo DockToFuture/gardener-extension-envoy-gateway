@@ -96,4 +96,8 @@ type EnvoyGatewayConfig struct {
 	// EnvoyProxyDefaults is an optional, opinionated template applied to every
 	// Gateway via the gateway.envoyproxy.io/v1alpha1.EnvoyProxy reference.
 	EnvoyProxyDefaults *EnvoyProxyDefaults `json:"envoyProxyDefaults,omitempty"`
+
+	// ManageDataPlaneNetworkPolicies, when true, let the extension reconcile a
+	// NetworkPolicy into each shoot namespace that holds a Gateway.
+	ManageDataPlaneNetworkPolicies *bool `json:"manageDataPlaneNetworkPolicies,omitempty"`
 }

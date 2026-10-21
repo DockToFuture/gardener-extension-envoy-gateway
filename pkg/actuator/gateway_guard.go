@@ -6,13 +6,16 @@ package actuator
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	extensionsconfigv1alpha1 "github.com/gardener/gardener/extensions/pkg/apis/config/v1alpha1"
 	extensionsutil "github.com/gardener/gardener/extensions/pkg/util"
 	"github.com/gardener/gardener/pkg/controllerutils"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 
@@ -20,25 +23,39 @@ import (
 )
 
 // gatewayExistsFinalizer is the finalizer the upstream Envoy Gateway controller
-// puts on a GatewayClass while Gateways reference it. On shoot deletion that
-// controller is gone and cannot remove it, wedging the GatewayClass, its CRD,
-// and our ManagedResource in Terminating — so we clear it ourselves.
+// puts on a GatewayClass while Gateways reference it.
 const gatewayExistsFinalizer = "gateway-exists-finalizer.gateway.networking.k8s.io"
 
+const (
+	// gatewayDeletionPollInterval is how often WaitUntilGatewaysDeleted polls.
+	gatewayDeletionPollInterval = 2 * time.Second
+	// GatewayDeletionTimeout bounds how long the actuator waits for user Gateways
+	// (and their LB Services) to drain. Kept under the gardenlet's pre-apiserver wait.
+	GatewayDeletionTimeout = 2 * time.Minute
+)
+
+// ErrGatewaysStillDeleting means the wait timed out with the shoot API server
+// reachable and Gateways still present — retryable, so the caller should requeue.
+var ErrGatewaysStillDeleting = errors.New("user Gateways still present in shoot")
+
 // GatewayLister lists Gateway objects in a shoot and clears the leftover
-// GatewayClass finalizer during shoot deletion. It is injectable so that unit
-// tests can replace the production implementation (which requires a running
-// shoot API server) with an in-memory fake.
+// GatewayClass finalizer during shoot deletion.
 type GatewayLister interface {
 	// ListGateways returns the names of Gateway objects (namespace/name) that
-	// exist in the shoot identified by the given seed-side control-plane
-	// namespace. An empty slice means the shoot is empty of user Gateways.
+	// exist in the shoot
 	ListGateways(ctx context.Context, seedNamespace string) ([]string, error)
 
 	// ClearGatewayClassFinalizer removes the gateway-exists finalizer from the
-	// extension's GatewayClass in the shoot. It is a no-op when the GatewayClass
-	// is already absent or carries no such finalizer.
+	// extension's GatewayClass in the shoot.
 	ClearGatewayClassFinalizer(ctx context.Context, seedNamespace string) error
+
+	// DeleteGateways deletes all Gateway objects across all namespaces in the
+	// shoot identified by the given seed-side control-plane namespace.
+	DeleteGateways(ctx context.Context, seedNamespace string) error
+
+	// WaitUntilGatewaysDeleted blocks until no Gateway objects remain in the
+	// shoot, or the context is done.
+	WaitUntilGatewaysDeleted(ctx context.Context, seedNamespace string) error
 }
 
 // realGatewayLister builds a shoot client from the seed and lists Gateway
@@ -54,14 +71,9 @@ func NewRealGatewayLister(seedClient client.Client) GatewayLister {
 }
 
 func (r *realGatewayLister) ListGateways(ctx context.Context, seedNamespace string) ([]string, error) {
-	shootClient, err := r.shootClient(ctx, seedNamespace)
+	list, err := r.fetchGatewayList(ctx, seedNamespace)
 	if err != nil {
 		return nil, err
-	}
-
-	list := &gatewayapiv1.GatewayList{}
-	if err := shootClient.List(ctx, list); err != nil {
-		return nil, fmt.Errorf("failed to list Gateways in shoot: %w", err)
 	}
 
 	names := make([]string, 0, len(list.Items))
@@ -72,10 +84,25 @@ func (r *realGatewayLister) ListGateways(ctx context.Context, seedNamespace stri
 	return names, nil
 }
 
+// fetchGatewayList builds a shoot-scoped client and returns the raw GatewayList.
+// The delete guard derives from it.
+func (r *realGatewayLister) fetchGatewayList(ctx context.Context, seedNamespace string) (*gatewayapiv1.GatewayList, error) {
+	shootClient, err := r.shootClient(ctx, seedNamespace)
+	if err != nil {
+		return nil, err
+	}
+
+	list := &gatewayapiv1.GatewayList{}
+	if err := shootClient.List(ctx, list); err != nil {
+		return nil, fmt.Errorf("failed to list Gateways in shoot: %w", err)
+	}
+
+	return list, nil
+}
+
 // ClearGatewayClassFinalizer removes the gateway-exists finalizer from the
 // extension's GatewayClass so it can finish deleting once the envoy-gateway
-// control plane is gone. A missing GatewayClass or missing finalizer is a
-// no-op.
+// control plane is gone.
 func (r *realGatewayLister) ClearGatewayClassFinalizer(ctx context.Context, seedNamespace string) error {
 	shootClient, err := r.shootClient(ctx, seedNamespace)
 	if err != nil {
@@ -98,14 +125,67 @@ func (r *realGatewayLister) ClearGatewayClassFinalizer(ctx context.Context, seed
 	return nil
 }
 
+// DeleteGateways deletes all Gateway objects in the shoot.
+func (r *realGatewayLister) DeleteGateways(ctx context.Context, seedNamespace string) error {
+	shootClient, err := r.shootClient(ctx, seedNamespace)
+	if err != nil {
+		return err
+	}
+
+	list := &gatewayapiv1.GatewayList{}
+	if err := shootClient.List(ctx, list); err != nil {
+		return fmt.Errorf("failed to list Gateways in shoot: %w", err)
+	}
+
+	for i := range list.Items {
+		gw := &list.Items[i]
+		if gw.DeletionTimestamp != nil {
+			// Already terminating; nothing to do.
+			continue
+		}
+		if err := shootClient.Delete(ctx, gw); client.IgnoreNotFound(err) != nil {
+			return fmt.Errorf("failed to delete Gateway %s/%s in shoot: %w", gw.Namespace, gw.Name, err)
+		}
+	}
+
+	return nil
+}
+
+func (r *realGatewayLister) WaitUntilGatewaysDeleted(ctx context.Context, seedNamespace string) error {
+	// lastErr distinguishes a timeout with the API server reachable (Gateways
+	// still present, retryable) from one where it was unreachable (terminal).
+	var lastErr error
+
+	waitErr := wait.PollUntilContextCancel(ctx, gatewayDeletionPollInterval, true, func(ctx context.Context) (bool, error) {
+		list, err := r.fetchGatewayList(ctx, seedNamespace)
+		if err != nil {
+			// API server likely gone; remember why and keep polling until deadline.
+			lastErr = err
+
+			return false, nil
+		}
+
+		lastErr = nil
+
+		return len(list.Items) == 0, nil
+	})
+	if waitErr == nil {
+		return nil
+	}
+
+	if lastErr != nil {
+		return fmt.Errorf("shoot API server unreachable while waiting for Gateways to be deleted: %w", lastErr)
+	}
+
+	return ErrGatewaysStillDeleting
+}
+
 func (r *realGatewayLister) shootClient(ctx context.Context, seedNamespace string) (client.Client, error) {
 	scheme, err := newGatewayScheme()
 	if err != nil {
 		return nil, err
 	}
 
-	// NewClientForShoot returns after reading the kubeconfig secret; the shoot
-	// API server is only contacted on the first request through the client.
 	_, shootClient, err := extensionsutil.NewClientForShoot(
 		ctx,
 		r.seedClient,
@@ -121,9 +201,7 @@ func (r *realGatewayLister) shootClient(ctx context.Context, seedNamespace strin
 }
 
 // gatewaysInUseError indicates that the extension cannot be deleted because
-// user-owned Gateway objects still exist in the shoot. The Gardener admission
-// chain surfaces this back to the user on the Shoot update that disabled the
-// extension.
+// user-owned Gateway objects still exist in the shoot.
 type gatewaysInUseError struct {
 	names []string
 }
