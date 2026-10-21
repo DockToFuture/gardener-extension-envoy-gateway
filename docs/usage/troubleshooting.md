@@ -92,6 +92,10 @@ legitimate upstreams). See
 [`manageDataPlaneNetworkPolicies`](configuration.md#managedataplanenetworkpolicies)
 for the two-policy pair you need to add per `Gateway` namespace.
 
+If your default-deny posture also restricts egress (`policyTypes: [Ingress, Egress]`),
+remember the backend pods need their own egress rules too (DNS, any services they
+call); otherwise the backend reaches the proxy but its own outbound calls time out.
+
 Intermittent success/failure is the same cause seen through a load balancer:
 with multiple proxy replicas and/or multiple backend pods, some paths are allowed
 (for example same-node traffic that the CNI does not drop) while others are

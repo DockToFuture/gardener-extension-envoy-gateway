@@ -187,6 +187,13 @@ It manages two policies per `Gateway` namespace:
 >               app.kubernetes.io/managed-by: envoy-gateway
 >               app.kubernetes.io/name: envoy
 > ```
+>
+> The `allow-backend-ingress` policy above opens only the backend's **ingress**
+> from the proxies. If your default-deny posture also restricts **egress**
+> (e.g. a `default-deny` policy with `policyTypes: [Ingress, Egress]` selecting
+> all pods), the backend additionally needs its own egress rules for anything it
+> initiates itself — DNS, and any other services it calls. Replies on the
+> connection the proxy opened are stateful and do not need an egress rule.
 
 Three ingress ports are opened because they serve different callers:
 
