@@ -393,6 +393,17 @@ func (a *Actuator) Delete(ctx context.Context, logger logr.Logger, ex *extension
 		return err
 	}
 
+	// Tear down the per-shoot NetworkPolicy controller (Deployment +
+	// shoot-access secret) first, in all delete cases — a deleted Extension never
+	// keeps its controller. This must happen before pruning the policies below:
+	// while the controller is running its self-heal watch would recreate any
+	// policy we delete (the managed Gateway still exists on a live shoot),
+	// leaving them orphaned. This mirrors the Teardown-then-prune order of the
+	// feature-disable path in Reconcile.
+	if err := a.netpolDeployer.Teardown(ctx, logger, clusterName); err != nil {
+		return fmt.Errorf("failed to tear down data-plane NetworkPolicy controller: %w", err)
+	}
+
 	// Prune the data-plane NetworkPolicies only while the shoot is still alive:
 	// when the shoot is being deleted its cluster is going away anyway, so there
 	// is nothing to clean up.
@@ -400,13 +411,6 @@ func (a *Actuator) Delete(ctx context.Context, logger logr.Logger, ex *extension
 		if err := a.netpolReconciler.Reconcile(ctx, clusterName); err != nil {
 			return fmt.Errorf("failed to remove data-plane NetworkPolicies: %w", err)
 		}
-	}
-
-	// Tear down the per-shoot NetworkPolicy controller (Deployment +
-	// shoot-access secret) in all delete cases — a deleted Extension never keeps
-	// its controller.
-	if err := a.netpolDeployer.Teardown(ctx, logger, clusterName); err != nil {
-		return fmt.Errorf("failed to tear down data-plane NetworkPolicy controller: %w", err)
 	}
 
 	deployer := envoygateway.NewDeployer(a.client, logger, envoygateway.DefaultConfig(), a.imageVector)
