@@ -451,10 +451,7 @@ func (d *Deployer) configMap() *corev1.ConfigMap {
 	if logLevel == "" {
 		logLevel = LogLevelInfo
 	}
-	// provider.kubernetes.deploy.type=GatewayNamespace is the confused-deputy fix:
-	// it places each Gateway's data-plane proxy and ServiceAccount in the Gateway's
-	// own namespace instead of the controller namespace (kube-system), capping the
-	// blast radius to the tenant that created the Gateway.
+	// GatewayNamespace deploy mode places each Gateway's data plane in the Gateway's own namespace.
 	cfg := fmt.Sprintf(`apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyGateway
 logging:
@@ -1061,7 +1058,7 @@ func (d *Deployer) networkPolicy() *networkingv1.NetworkPolicy {
 			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
 			Ingress: []networkingv1.NetworkPolicyIngressRule{{
 				From: []networkingv1.NetworkPolicyPeer{{
-					NamespaceSelector: &metav1.LabelSelector{},
+					NamespaceSelector: &metav1.LabelSelector{}, // empty = all namespaces
 					PodSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{
 							LabelManagedBy: EnvoyProxyManagedByValue,
@@ -1237,16 +1234,20 @@ func envoyProxyGuard() (*admissionregistrationv1.ValidatingAdmissionPolicy, *adm
 	// Each guarded field is rejected on both the envoyDeployment and the
 	// envoyDaemonSet workload. A validation passes when the workload is unset or
 	// the field is absent, so the expression is built from the workload variable
-	// and the field path.
+	// and the field path. The variable name and its user-facing display name are
+	// kept together so adding a workload cannot desynchronise two parallel slices.
 	guardedFields := []string{"patch", "initContainers", "pod.volumes", "container.volumeMounts", "pod.securityContext", "container.securityContext"}
-	workloads := []string{"deploy", "daemonset"}
+	workloads := []struct{ variable, displayName string }{
+		{variable: "deploy", displayName: "envoyDeployment"},
+		{variable: "daemonset", displayName: "envoyDaemonSet"},
+	}
 	validations := make([]admissionregistrationv1.Validation, 0, len(guardedFields)*len(workloads))
 	for _, field := range guardedFields {
-		for i, workload := range workloads {
+		for _, workload := range workloads {
 			validations = append(validations, admissionregistrationv1.Validation{
-				Expression: fieldAbsentExpression(workload, field),
+				Expression: fieldAbsentExpression(workload.variable, field),
 				Reason:     &forbidden,
-				Message:    fmt.Sprintf("%s.%s is not permitted on EnvoyProxy", []string{"envoyDeployment", "envoyDaemonSet"}[i], field),
+				Message:    fmt.Sprintf("%s.%s is not permitted on EnvoyProxy", workload.displayName, field),
 			})
 		}
 	}

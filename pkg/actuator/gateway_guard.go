@@ -64,9 +64,9 @@ type realGatewayLister struct {
 	seedClient client.Client
 }
 
-// NewRealGatewayLister returns a GatewayLister that talks to a real shoot
+// NewGatewayLister returns a GatewayLister that talks to a real shoot
 // API server via util.NewClientForShoot. This is the production default.
-func NewRealGatewayLister(seedClient client.Client) GatewayLister {
+func NewGatewayLister(seedClient client.Client) GatewayLister {
 	return &realGatewayLister{seedClient: seedClient}
 }
 

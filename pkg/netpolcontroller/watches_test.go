@@ -113,9 +113,15 @@ func TestManagedPolicyPredicate(t *testing.T) {
 		envoygateway.LabelManagedBy: "someone-else",
 	}}}
 
-	// Create is ignored to avoid self-triggering on our own CreateOrUpdate writes.
-	if p.Create(event.TypedCreateEvent[*networkingv1.NetworkPolicy]{Object: managed}) {
-		t.Error("create of a managed policy must be ignored to avoid a reconcile loop")
+	// Create must pass for managed policies: the informer replays existing
+	// policies as creates on (re)start, and that is what prunes policies
+	// orphaned while the controller was down. CreateOrUpdate is idempotent, so
+	// reconciling our own writes does not loop.
+	if !p.Create(event.TypedCreateEvent[*networkingv1.NetworkPolicy]{Object: managed}) {
+		t.Error("create of a managed policy must pass so restart-time orphans get pruned")
+	}
+	if p.Create(event.TypedCreateEvent[*networkingv1.NetworkPolicy]{Object: foreign}) {
+		t.Error("create of a non-managed policy must be ignored")
 	}
 	if !p.Delete(event.TypedDeleteEvent[*networkingv1.NetworkPolicy]{Object: managed}) {
 		t.Error("delete of a managed policy must trigger self-heal")

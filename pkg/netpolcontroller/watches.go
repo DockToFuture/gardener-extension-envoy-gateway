@@ -58,16 +58,19 @@ func managedGatewayPredicate() predicate.TypedPredicate[*gatewayv1.Gateway] {
 }
 
 // managedPolicyPredicate restricts the self-heal NetworkPolicy watch to the
-// policies this extension manages, and ignores pure create events: a create is
-// almost always our own CreateOrUpdate write, so reconciling on it would loop.
-// Deletes and spec-changing updates are what we must heal.
+// policies this extension manages. It accepts creates too: the informer replays
+// the shoot's existing managed policies as create events on (re)start, and that
+// is the only signal that prunes policies orphaned while the controller was down
+// (e.g. a Gateway deleted during the downtime no longer emits a Gateway event).
+// Reconciling on our own CreateOrUpdate writes does not loop because the write
+// is idempotent — re-applying the same spec produces no further event.
 func managedPolicyPredicate() predicate.TypedPredicate[*networkingv1.NetworkPolicy] {
 	isManaged := func(np *networkingv1.NetworkPolicy) bool {
 		return np != nil && np.Labels[envoygateway.LabelManagedBy] == envoygateway.LabelManagedByValue && np.Labels[envoygateway.LabelHop] != ""
 	}
 
 	return predicate.TypedFuncs[*networkingv1.NetworkPolicy]{
-		CreateFunc: func(e event.TypedCreateEvent[*networkingv1.NetworkPolicy]) bool { return false },
+		CreateFunc: func(e event.TypedCreateEvent[*networkingv1.NetworkPolicy]) bool { return isManaged(e.Object) },
 		DeleteFunc: func(e event.TypedDeleteEvent[*networkingv1.NetworkPolicy]) bool { return isManaged(e.Object) },
 		UpdateFunc: func(e event.TypedUpdateEvent[*networkingv1.NetworkPolicy]) bool { return isManaged(e.ObjectNew) },
 		GenericFunc: func(e event.TypedGenericEvent[*networkingv1.NetworkPolicy]) bool {

@@ -18,18 +18,13 @@ import (
 	"github.com/gardener/gardener-extension-envoy-gateway/pkg/envoygateway"
 )
 
-// DataPlaneNetworkPolicyReconciler removes the data-plane NetworkPolicies this
-// extension manages directly from the shoot. While the feature is enabled the
-// per-shoot controller owns the policies' creation and update; this reconciler
-// handles the one-shot cleanup when the feature is disabled or the shoot's
-// Extension is deleted while the shoot still lives.
+// DataPlaneNetworkPolicyReconciler deletes the data-plane NetworkPolicies this
+// extension manages in the shoot. It handles the one-shot cleanup when the
+// feature is disabled or the Extension is deleted while the shoot still lives.
 type DataPlaneNetworkPolicyReconciler interface {
-	// Reconcile removes every data-plane NetworkPolicy this extension owns in the
-	// shoot (the hop-1 proxy ingress and hop-2 proxy egress policies).
-	// desiredNamespaces is retained for signature compatibility; a non-empty set
-	// is treated as "keep nothing" the same as nil, because the per-shoot
-	// controller — not this reconciler — reconciles the desired state.
-	Reconcile(ctx context.Context, seedNamespace string, desiredNamespaces []string) error
+	// Reconcile deletes every data-plane NetworkPolicy this extension owns in the
+	// shoot (selected by the managed-by label).
+	Reconcile(ctx context.Context, seedNamespace string) error
 }
 
 // dataPlaneNetworkPolicyReconciler prunes the policies against the shoot API
@@ -44,7 +39,7 @@ func NewDataPlaneNetworkPolicyReconciler(seedClient client.Client) DataPlaneNetw
 	return &dataPlaneNetworkPolicyReconciler{seedClient: seedClient}
 }
 
-func (r *dataPlaneNetworkPolicyReconciler) Reconcile(ctx context.Context, seedNamespace string, _ []string) error {
+func (r *dataPlaneNetworkPolicyReconciler) Reconcile(ctx context.Context, seedNamespace string) error {
 	scheme, err := kubernetesScheme()
 	if err != nil {
 		return err
@@ -65,10 +60,11 @@ func (r *dataPlaneNetworkPolicyReconciler) Reconcile(ctx context.Context, seedNa
 
 	// Remove every data-plane policy this extension owns in the shoot: the hop-1
 	// proxy ingress and the hop-2 proxy egress policies the per-shoot controller
-	// wrote while the feature was enabled. The managed-by label selects them
-	// regardless of hop.
+	// wrote while the feature was enabled. The managed-by value alone is shared
+	// across Gardener components, so the selector also requires the hop label key
+	// to stay scoped to this extension's own policies.
 	list := &networkingv1.NetworkPolicyList{}
-	if err := shootClient.List(ctx, list, envoygateway.ManagedDataPlanePolicyLabels()); err != nil {
+	if err := shootClient.List(ctx, list, envoygateway.ManagedDataPlanePolicyListOptions()...); err != nil {
 		return fmt.Errorf("failed to list managed data-plane NetworkPolicies in shoot: %w", err)
 	}
 

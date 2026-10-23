@@ -93,7 +93,7 @@ func New(c client.Client, imageVector imagevector.ImageVector, opts ...Option) (
 	}
 
 	if act.gatewayLister == nil {
-		act.gatewayLister = NewRealGatewayLister(c)
+		act.gatewayLister = NewGatewayLister(c)
 	}
 
 	if act.netpolReconciler == nil {
@@ -267,8 +267,6 @@ func (a *Actuator) Reconcile(ctx context.Context, logger logr.Logger, ex *extens
 
 		egConfig.EnvoyProxyDefaults = cfg.EnvoyProxyDefaults
 
-		// Defaults to false; only an explicit true makes the actuator reconcile
-		// the per-namespace data-plane ingress NetworkPolicies into the shoot.
 		if cfg.ManageDataPlaneNetworkPolicies != nil {
 			manageDataPlaneNetworkPolicies = *cfg.ManageDataPlaneNetworkPolicies
 		}
@@ -298,14 +296,8 @@ func (a *Actuator) Reconcile(ctx context.Context, logger logr.Logger, ex *extens
 		logger.Error(err, "failed to sweep orphaned data-plane resources from kube-system; continuing", "cluster", clusterName)
 	}
 
-	// Reconcile the per-shoot data-plane NetworkPolicy controller. When the
-	// feature is on, ensure its seed Deployment + shoot-access secret exist; the
-	// controller then watches the shoot's Gateways and reconciles the hop-1
-	// ingress and hop-2 egress policies event-driven (superseding the old inline
-	// poll). When off, tear the controller down so a disabled feature converges
-	// to no controller. The torn-down controller cannot be relied on to prune
-	// the policies it wrote before its pod goes away, so we also prune them
-	// directly here.
+	// Ensure or tear down the per-shoot data-plane NetworkPolicy controller.
+	// When off, also prune any policies the controller wrote while it was enabled.
 	if manageDataPlaneNetworkPolicies {
 		if err := a.netpolDeployer.Ensure(ctx, logger, cluster, clusterName); err != nil {
 			return fmt.Errorf("failed to ensure data-plane NetworkPolicy controller: %w", err)
@@ -316,7 +308,7 @@ func (a *Actuator) Reconcile(ctx context.Context, logger logr.Logger, ex *extens
 		}
 		// With the controller gone, prune any policies a previously-enabled run
 		// left behind so disabling the feature converges to no managed policies.
-		if err := a.netpolReconciler.Reconcile(ctx, clusterName, nil); err != nil {
+		if err := a.netpolReconciler.Reconcile(ctx, clusterName); err != nil {
 			return fmt.Errorf("failed to prune data-plane NetworkPolicies after disabling the feature: %w", err)
 		}
 	}
@@ -401,11 +393,11 @@ func (a *Actuator) Delete(ctx context.Context, logger logr.Logger, ex *extension
 		return err
 	}
 
-	// Prune the data-plane NetworkPolicies we wrote directly into the shoot, but
-	// only on a live-shoot disable/removal (Shoot present and not itself being
-	// deleted).
-	if cluster.Shoot == nil || cluster.Shoot.DeletionTimestamp == nil {
-		if err := a.netpolReconciler.Reconcile(ctx, clusterName, nil); err != nil {
+	// Prune the data-plane NetworkPolicies only while the shoot is still alive:
+	// when the shoot is being deleted its cluster is going away anyway, so there
+	// is nothing to clean up.
+	if cluster.Shoot != nil && cluster.Shoot.DeletionTimestamp == nil {
+		if err := a.netpolReconciler.Reconcile(ctx, clusterName); err != nil {
 			return fmt.Errorf("failed to remove data-plane NetworkPolicies: %w", err)
 		}
 	}

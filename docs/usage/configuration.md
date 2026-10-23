@@ -112,27 +112,30 @@ It manages two policies per `Gateway` namespace:
 > | Hop | Allowed by |
 > |-----|------------|
 > | client → Envoy proxy (proxy ingress) | `manageDataPlaneNetworkPolicies` — **this feature** |
-> | Envoy proxy → your backend (proxy egress) | **you** |
-> | your backend ← Envoy proxy (backend ingress) | **you** |
+> | Envoy proxy → your backend (proxy egress) | **you** — always required (see below) |
+> | your backend accepts proxy (backend ingress) | **you** — always required (see below) |
 >
-> The proxy's egress policy carries only the **DNS** and **xDS** rules the proxy
-> needs to boot; it does **not** open egress to your backends. The extension
-> deliberately does not derive the proxy→backend hops from your routes: that
-> route-driven backend reachability is planned as a separate feature. Until it
-> lands, if you enable this feature on a default-deny namespace and see
-> `upstream connect error or disconnect/reset before headers` from Envoy,
-> external traffic *is* reaching the proxies — the missing piece is a
-> `NetworkPolicy` pair for your own backends. A hand-written proxy-egress policy
-> **replaces** the managed one, so it must reproduce the DNS and xDS rules in
-> addition to your backend rule; omitting the xDS rule cuts the proxy off from
-> its control plane and it never becomes `Ready`. For example:
+> Because NetworkPolicies are **additive**, the managed proxy-egress policy and
+> your own backend policies coexist: you do **not** replace the managed policy,
+> you **add** a second egress policy for your backends alongside it. On a
+> default-deny namespace the proxy→backend and backend-ingress hops are **always
+> required** — without them the proxy reaches DNS and its control plane but can
+> never reach your backend, so every request fails. The extension deliberately
+> does not derive these hops from your routes: that route-driven backend
+> reachability is planned as a separate feature. Until it lands, if you enable
+> this feature on a default-deny namespace and see `upstream connect error or
+> disconnect/reset before headers` from Envoy, external traffic *is* reaching the
+> proxies — the missing piece is the backend `NetworkPolicy` pair below. For
+> example:
 >
 > ```yaml
-> # 1. Allow the proxies to egress to DNS, the xDS control plane, and your backend.
+> # 1. Allow the proxies to egress to your backend. This is ADDED alongside the
+> #    managed proxy-egress policy (which already permits DNS and xDS) — policies
+> #    are additive, so you do not restate the DNS/xDS rules here.
 > apiVersion: networking.k8s.io/v1
 > kind: NetworkPolicy
 > metadata:
->   name: allow-proxy-egress
+>   name: allow-proxy-to-backend-egress
 >   namespace: <gateway-namespace>
 > spec:
 >   podSelector:
@@ -141,27 +144,6 @@ It manages two policies per `Gateway` namespace:
 >       app.kubernetes.io/name: envoy
 >   policyTypes: [Egress]
 >   egress:
->     # DNS resolution (kube-dns / node-local DNS).
->     - to:
->         - namespaceSelector: {}
->       ports:
->         - { protocol: UDP, port: 53 }
->         - { protocol: TCP, port: 53 }
->         - { protocol: UDP, port: 8053 }
->         - { protocol: TCP, port: 8053 }
->     # xDS: the proxy pulls its config from the envoy-gateway control plane in
->     # kube-system. Without this the proxy never programs a listener and stays
->     # NotReady. Do not omit this rule.
->     - to:
->         - namespaceSelector:
->             matchLabels:
->               kubernetes.io/metadata.name: kube-system
->           podSelector:
->             matchLabels:
->               app.kubernetes.io/name: envoy-gateway
->               app.kubernetes.io/instance: envoy-gateway
->       ports:
->         - { protocol: TCP, port: 18000 }
 >     # Your backend pods. Add a namespaceSelector too if the backend is in a
 >     # different namespace than the Gateway.
 >     - to:
@@ -203,6 +185,11 @@ Three ingress ports are opened because they serve different callers:
 - `19003` — the proxy's readiness endpoint (`/readyz`), probed by the kubelet
   and, in IP-target LB modes (e.g. GKE NEG, AWS NLB `target-type: ip`), by the
   load balancer directly.
+
+> **Only `Gateway` listeners on `:80` and `:443` are supported.** The managed
+> ingress policy opens exactly the two shifted ports (`10080`, `10443`) these
+> map to. A `Gateway` that listens on any other port will have its traffic
+> blocked on a default-deny namespace — the managed policy will not open it.
 
 The policies are reconciled by a small per-shoot controller the extension runs
 in the shoot's control-plane namespace **on the seed** (not inside the shoot).
@@ -312,9 +299,31 @@ underlying LB for each Service.
 
 ## Migration: data plane moved out of `kube-system`
 
+> **Applies to:** shoots upgrading to **v0.2.0** (the first release that pins
+> the `GatewayNamespace` deploy mode) from **v0.1.0**, which used the upstream
+> `ControllerNamespace` mode with the data plane in `kube-system`. It applies
+> to every v0.2.0-or-later upgrade from a v0.1.x cluster. On a cluster first
+> created on v0.2.0 or later there is nothing to migrate.
+
 Extensions upgraded across the `GatewayNamespace` switch move each `Gateway`'s
 data-plane proxy `Deployment` and its LoadBalancer `Service` from `kube-system`
-into the `Gateway`'s own namespace. Envoy Gateway **recreates** the bundle in the
+into the `Gateway`'s own namespace.
+
+> [!WARNING]
+> **This migration is disruptive in two ways:**
+> 1. **A new load balancer is provisioned.** The proxy's `Service` is recreated
+>    in the `Gateway` namespace, so the cloud-controller-manager provisions a
+>    **new** cloud LB with a **new address**. Clients pinned to the old LB's
+>    IP/hostname (or DNS that has not yet repropagated) will not follow
+>    automatically.
+> 2. **There is no make-before-break guarantee.** Envoy Gateway recreates the
+>    proxy bundle in the new namespace independently of tearing down the old one;
+>    nothing sequences "new proxy is `Ready` and serving" before the old data
+>    plane stops receiving traffic. Expect a window where neither the old nor the
+>    new LB reliably serves the `Gateway`. Plan the upgrade in a maintenance
+>    window for traffic-bearing clusters.
+
+Envoy Gateway **recreates** the bundle in the
 new namespace but does **not** garbage-collect the old copies it left in
 `kube-system` — they were created directly by the controller (not via the
 extension's `ManagedResource`), so nothing owns them anymore. Left alone this

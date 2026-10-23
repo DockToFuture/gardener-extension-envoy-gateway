@@ -35,11 +35,17 @@ func managedLabels(name string, hop Hop) map[string]string {
 	}
 }
 
-// ManagedDataPlanePolicyLabels is the label selector matching every data-plane
-// NetworkPolicy this extension manages. It scopes a prune List to policies this
-// extension owns, regardless of hop.
-func ManagedDataPlanePolicyLabels() client.MatchingLabels {
-	return client.MatchingLabels{LabelManagedBy: LabelManagedByValue}
+// ManagedDataPlanePolicyListOptions returns the List options matching every
+// data-plane NetworkPolicy this extension manages, regardless of hop. The
+// managed-by value ("gardener") is shared across Gardener components, so a
+// prune must not key on it alone; requiring the presence of the hop label key
+// — which only this extension stamps on its data-plane policies — scopes the
+// selection to policies this extension owns.
+func ManagedDataPlanePolicyListOptions() []client.ListOption {
+	return []client.ListOption{
+		client.MatchingLabels{LabelManagedBy: LabelManagedByValue},
+		client.HasLabels{LabelHop},
+	}
 }
 
 // DataPlaneProxyIngressPolicy returns the hop-1 (client → proxy) ingress
