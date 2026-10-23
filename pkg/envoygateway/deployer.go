@@ -19,7 +19,9 @@ import (
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/utils/imagevector"
 	"github.com/gardener/gardener/pkg/utils/managedresources"
+	versionutils "github.com/gardener/gardener/pkg/utils/version"
 	"github.com/go-logr/logr"
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -29,11 +31,13 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	gatewayapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 	sigsyaml "sigs.k8s.io/yaml"
 
 	"github.com/gardener/gardener-extension-envoy-gateway/pkg/apis/config"
@@ -66,12 +70,16 @@ func init() {
 	_ = rbacv1.AddToScheme(shootScheme)
 	_ = policyv1.AddToScheme(shootScheme)
 	_ = networkingv1.AddToScheme(shootScheme)
+	_ = admissionregistrationv1.AddToScheme(shootScheme)
+	_ = gatewayapiv1.Install(shootScheme)
 	shootCodec = serializer.NewCodecFactory(shootScheme).LegacyCodec(
 		corev1.SchemeGroupVersion,
 		appsv1.SchemeGroupVersion,
 		rbacv1.SchemeGroupVersion,
 		policyv1.SchemeGroupVersion,
 		networkingv1.SchemeGroupVersion,
+		admissionregistrationv1.SchemeGroupVersion,
+		schema.GroupVersion{Group: gatewayapiv1.GroupName, Version: gatewayapiv1.GroupVersion.Version},
 	)
 }
 
@@ -95,6 +103,17 @@ type Config struct {
 	ManageCRDs bool
 	// EnvoyProxyDefaults are opinionated defaults applied per-Gateway.
 	EnvoyProxyDefaults *config.EnvoyProxyDefaults
+	// ShootKubernetesVersion is the shoot's Kubernetes version (e.g. "1.30.2").
+	// It gates resources that are not available on every supported release, such
+	// as the ValidatingAdmissionPolicy guard, which requires the
+	// admissionregistration.k8s.io/v1 API that is only served from 1.30 onwards.
+	// Empty means "unknown", in which case version-gated resources are skipped.
+	ShootKubernetesVersion string
+	// ManageDataPlaneNetworkPolicies controls whether the in-shoot RBAC for the
+	// per-shoot data-plane NetworkPolicy controller (its ServiceAccount,
+	// ClusterRole, and binding) is delivered. The controller itself runs on the
+	// seed; this RBAC backs the shoot-access token it authenticates with.
+	ManageDataPlaneNetworkPolicies bool
 }
 
 // DefaultConfig returns the default configuration.
@@ -243,7 +262,7 @@ func (d *Deployer) buildResources(tls TLSBundle) (map[string][]byte, error) {
 		{"service.yaml", d.service()},
 		{"poddisruptionbudget.yaml", d.podDisruptionBudget()},
 		{"networkpolicy.yaml", d.networkPolicy()},
-		{"networkpolicy-proxies.yaml", d.networkPolicyForEnvoyProxies()},
+		{"gatewayclass.yaml", d.gatewayClass()},
 	}
 	for _, o := range objects {
 		if err := encode(o.name, o.obj); err != nil {
@@ -267,19 +286,69 @@ func (d *Deployer) buildResources(tls TLSBundle) (map[string][]byte, error) {
 		}
 	}
 
-	// GatewayClass is delivered as raw YAML because we don't want to pull the
-	// sigs.k8s.io/gateway-api types into our deployer scheme.
-	resources["gatewayclass.yaml"] = []byte(d.gatewayClassYAML())
-	// Default EnvoyProxy CR referenced by the GatewayClass. Ships pod labels
-	// that let data-plane envoy pods pass Gardener's kube-system egress
-	// NetworkPolicies.
+	// The default EnvoyProxy CR referenced by the GatewayClass is shipped as raw
+	// YAML: it is a gateway.envoyproxy.io custom resource whose Go types live in a
+	// module this extension does not otherwise depend on, and pulling that module
+	// in for a single document is not worth it. It ships the pod labels that let
+	// data-plane envoy pods pass Gardener's default-deny egress NetworkPolicies in
+	// the Gateway's own namespace.
 	resources["envoyproxy-defaults.yaml"] = []byte(d.envoyProxyDefaultsYAML())
+
+	// The ValidatingAdmissionPolicy and its binding are two objects delivered in
+	// one manifest. They are defense-in-depth on top of GatewayNamespace mode and
+	// require the admissionregistration.k8s.io/v1 ValidatingAdmissionPolicy API,
+	// which is only served from Kubernetes 1.30. On older shoots the kinds do not
+	// exist and applying the manifest would fail, so the guard is skipped there.
+	if d.validatingAdmissionPolicySupported() {
+		policy, binding := envoyProxyGuard()
+		vap, err := encodeObjects(policy, binding)
+		if err != nil {
+			return nil, err
+		}
+		resources["validatingadmissionpolicy.yaml"] = vap
+	} else {
+		d.logger.Info("skipping EnvoyProxy ValidatingAdmissionPolicy guard: shoot Kubernetes version does not serve admissionregistration.k8s.io/v1 ValidatingAdmissionPolicy (requires >= 1.30)", "version", d.config.ShootKubernetesVersion)
+	}
 
 	if d.config.ManageCRDs {
 		d.addCRDs(resources)
 	}
 
+	// In-shoot RBAC for the per-shoot data-plane NetworkPolicy controller. The
+	// controller runs on the seed but authenticates to the shoot as this
+	// ServiceAccount; omitting these objects when the feature is off lets GRM
+	// garbage-collect them.
+	if d.config.ManageDataPlaneNetworkPolicies {
+		for _, o := range []struct {
+			name string
+			obj  runtime.Object
+		}{
+			{"netpol-controller-serviceaccount.yaml", d.netpolControllerServiceAccount()},
+			{"netpol-controller-clusterrole.yaml", d.netpolControllerClusterRole()},
+			{"netpol-controller-clusterrolebinding.yaml", d.netpolControllerClusterRoleBinding()},
+		} {
+			if err := encode(o.name, o.obj); err != nil {
+				return nil, err
+			}
+		}
+	}
+
 	return resources, nil
+}
+
+// encodeObjects encodes one or more objects into a single multi-document YAML
+// manifest, joining the documents with the standard "---" separator.
+func encodeObjects(objs ...runtime.Object) ([]byte, error) {
+	docs := make([][]byte, 0, len(objs))
+	for _, obj := range objs {
+		data, err := runtime.Encode(shootCodec, obj)
+		if err != nil {
+			return nil, fmt.Errorf("failed to encode object: %w", err)
+		}
+		docs = append(docs, bytes.TrimRight(data, "\n"))
+	}
+
+	return bytes.Join(docs, []byte("\n---\n")), nil
 }
 
 // addCRDs adds the embedded Gateway API standard-channel CRDs, the Envoy
@@ -382,12 +451,18 @@ func (d *Deployer) configMap() *corev1.ConfigMap {
 	if logLevel == "" {
 		logLevel = LogLevelInfo
 	}
+	// GatewayNamespace deploy mode places each Gateway's data plane in the Gateway's own namespace.
 	cfg := fmt.Sprintf(`apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyGateway
 logging:
   level:
     default: %s
-`, logLevel)
+provider:
+  type: Kubernetes
+  kubernetes:
+    deploy:
+      type: %s
+`, logLevel, DeployModeGatewayNamespace)
 
 	return &corev1.ConfigMap{
 		TypeMeta: metav1.TypeMeta{
@@ -528,17 +603,17 @@ func (d *Deployer) clusterRole() *rbacv1.ClusterRole {
 			// gatewayclasses is cluster-scoped; envoy-gateway also sets a
 			// finalizer on the class it manages, so patch/update are needed
 			// in addition to the read verbs.
-			APIGroups: []string{apiGroupGatewayAPI},
+			APIGroups: []string{APIGroupGatewayAPI},
 			Resources: []string{"gatewayclasses"},
 			Verbs:     []string{verbGet, verbList, verbWatch, verbPatch, verbUpdate},
 		},
 		{
-			APIGroups: []string{apiGroupGatewayAPI},
+			APIGroups: []string{APIGroupGatewayAPI},
 			Resources: []string{"gateways", "httproutes", "grpcroutes", "tcproutes", "tlsroutes", "udproutes", "referencegrants", "backendtlspolicies", "listenersets"},
 			Verbs:     []string{verbGet, verbList, verbWatch},
 		},
 		{
-			APIGroups: []string{apiGroupGatewayAPI},
+			APIGroups: []string{APIGroupGatewayAPI},
 			Resources: []string{"gatewayclasses/status", "gateways/status", "httproutes/status", "grpcroutes/status", "tcproutes/status", "tlsroutes/status", "udproutes/status", "backendtlspolicies/status", "listenersets/status"},
 			Verbs:     []string{verbUpdate, verbPatch},
 		},
@@ -557,7 +632,7 @@ func (d *Deployer) clusterRole() *rbacv1.ClusterRole {
 	return &rbacv1.ClusterRole{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: apiVersionRBAC,
-			Kind:       "ClusterRole",
+			Kind:       kindClusterRole,
 		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   ClusterRoleName,
@@ -571,21 +646,94 @@ func (d *Deployer) clusterRoleBinding() *rbacv1.ClusterRoleBinding {
 	return &rbacv1.ClusterRoleBinding{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: apiVersionRBAC,
-			Kind:       "ClusterRoleBinding",
+			Kind:       kindClusterRoleBinding,
 		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   ClusterRoleName,
 			Labels: commonLabels(),
 		},
 		RoleRef: rbacv1.RoleRef{
-			APIGroup: "rbac.authorization.k8s.io",
-			Kind:     "ClusterRole",
+			APIGroup: apiGroupRBAC,
+			Kind:     kindClusterRole,
 			Name:     ClusterRoleName,
 		},
 		Subjects: []rbacv1.Subject{
 			{
 				Kind:      kindServiceAccount,
 				Name:      ServiceAccountName,
+				Namespace: Namespace,
+			},
+		},
+	}
+}
+
+// netpolControllerServiceAccount is the shoot ServiceAccount the seed-side
+// data-plane NetworkPolicy controller authenticates as (via its shoot-access
+// token). It lives in kube-system, where GRM's token-requestor mints tokens.
+func (d *Deployer) netpolControllerServiceAccount() *corev1.ServiceAccount {
+	return &corev1.ServiceAccount{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       kindServiceAccount,
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      NetpolControllerServiceAccountName,
+			Namespace: Namespace,
+			Labels:    commonLabels(),
+		},
+	}
+}
+
+// netpolControllerClusterRole is the least-privilege ClusterRole for the
+// data-plane NetworkPolicy controller: read-only on the Gateways it keys off,
+// and full CRUD on NetworkPolicies cluster-wide (it writes the hop-1 ingress and
+// hop-2 egress policies into Gateway namespaces).
+func (d *Deployer) netpolControllerClusterRole() *rbacv1.ClusterRole {
+	rules := []rbacv1.PolicyRule{
+		{
+			APIGroups: []string{APIGroupGatewayAPI},
+			Resources: []string{"gateways"},
+			Verbs:     []string{verbGet, verbList, verbWatch},
+		},
+		{
+			APIGroups: []string{"networking.k8s.io"},
+			Resources: []string{"networkpolicies"},
+			Verbs:     []string{verbGet, verbList, verbWatch, verbCreate, verbUpdate, verbPatch, verbDelete},
+		},
+	}
+
+	return &rbacv1.ClusterRole{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: apiVersionRBAC,
+			Kind:       kindClusterRole,
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   NetpolControllerClusterRoleName,
+			Labels: commonLabels(),
+		},
+		Rules: rules,
+	}
+}
+
+func (d *Deployer) netpolControllerClusterRoleBinding() *rbacv1.ClusterRoleBinding {
+	return &rbacv1.ClusterRoleBinding{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: apiVersionRBAC,
+			Kind:       kindClusterRoleBinding,
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   NetpolControllerClusterRoleName,
+			Labels: commonLabels(),
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: apiGroupRBAC,
+			Kind:     kindClusterRole,
+			Name:     NetpolControllerClusterRoleName,
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      kindServiceAccount,
+				Name:      NetpolControllerServiceAccountName,
 				Namespace: Namespace,
 			},
 		},
@@ -630,7 +778,7 @@ func (d *Deployer) leaderElectionRoleBinding() *rbacv1.RoleBinding {
 			Labels:    commonLabels(),
 		},
 		RoleRef: rbacv1.RoleRef{
-			APIGroup: "rbac.authorization.k8s.io",
+			APIGroup: apiGroupRBAC,
 			Kind:     "Role",
 			Name:     LeaderElectionRoleName,
 		},
@@ -684,11 +832,6 @@ func (d *Deployer) deployment() (*appsv1.Deployment, error) {
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: ServiceAccountName,
-					// The PDB (minAvailable=1) is meaningless if both replicas can
-					// land on the same node, and the TopologySpreadConstraint is
-					// meaningless if both can land in the same zone. Both are
-					// preferred (not required) so single-node/single-zone shoots
-					// still schedule.
 					Affinity: &corev1.Affinity{
 						PodAntiAffinity: &corev1.PodAntiAffinity{
 							PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{
@@ -744,11 +887,6 @@ func (d *Deployer) deployment() (*appsv1.Deployment, error) {
 							},
 						},
 						{
-							// envoy-gateway uses /var/lib/eg as scratch for its wasm
-							// module cache. The container root is read-only for
-							// hardening, so we carve out a bounded emptyDir here —
-							// per-pod, non-persistent, capped at 100Mi to prevent a
-							// compromised process from exhausting node scratch space.
 							Name: "wasm-cache",
 							VolumeSource: corev1.VolumeSource{
 								EmptyDir: &corev1.EmptyDirVolumeSource{
@@ -766,15 +904,15 @@ func (d *Deployer) deployment() (*appsv1.Deployment, error) {
 								fmt.Sprintf("--config-path=%s/%s", ConfigMountPath, ConfigFileName),
 							},
 							Env: []corev1.EnvVar{
-								// envoy-gateway reads ENVOY_GATEWAY_NAMESPACE as its
-								// ControllerNamespace at startup. It backs the
-								// leader-election lease namespace, the watch namespace
-								// for owned objects, and the in-cluster API endpoint
-								// for its components. We deploy into kube-system, so
-								// this env var must reflect that — otherwise the pod
-								// reaches into the upstream default "envoy-gateway-system"
-								// where it has neither RBAC nor a Service.
 								{
+									// envoy-gateway reads ENVOY_GATEWAY_NAMESPACE as its
+									// ControllerNamespace at startup. It backs the
+									// leader-election lease namespace, the watch namespace
+									// for owned objects, and the in-cluster API endpoint
+									// for its components. We deploy into kube-system, so
+									// this env var must reflect that — otherwise the pod
+									// reaches into the upstream default "envoy-gateway-system"
+									// where it has neither RBAC nor a Service.
 									Name: "ENVOY_GATEWAY_NAMESPACE",
 									ValueFrom: &corev1.EnvVarSource{
 										FieldRef: &corev1.ObjectFieldSelector{
@@ -896,7 +1034,7 @@ func (d *Deployer) podDisruptionBudget() *policyv1.PodDisruptionBudget {
 // every inbound connection to our pod, and every user Gateway's Envoy stays
 // stuck with "xds_cluster connection timeout".
 func (d *Deployer) networkPolicy() *networkingv1.NetworkPolicy {
-	xdsPort := intstr.FromInt(18000)
+	xdsPort := intstr.FromInt(XDSPort)
 	metricsPort := intstr.FromInt(19001)
 	tcp := corev1.ProtocolTCP
 
@@ -920,10 +1058,11 @@ func (d *Deployer) networkPolicy() *networkingv1.NetworkPolicy {
 			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
 			Ingress: []networkingv1.NetworkPolicyIngressRule{{
 				From: []networkingv1.NetworkPolicyPeer{{
+					NamespaceSelector: &metav1.LabelSelector{}, // empty = all namespaces
 					PodSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{
-							LabelManagedBy: envoyProxyManagedByValue,
-							LabelName:      envoyProxyNameValue,
+							LabelManagedBy: EnvoyProxyManagedByValue,
+							LabelName:      EnvoyProxyNameValue,
 						},
 					},
 				}},
@@ -936,91 +1075,36 @@ func (d *Deployer) networkPolicy() *networkingv1.NetworkPolicy {
 	}
 }
 
-// networkPolicyForEnvoyProxies allows external traffic to reach the
-// data-plane Envoy proxies that envoy-gateway spawns per user-created
-// Gateway. Those proxies are exposed via a LoadBalancer Service; without
-// this policy, Gardener's default-deny NetworkPolicy in kube-system blocks
-// both the AWS ELB health checks (which hit the healthCheckNodePort) and the
-// actual client traffic that lands on the proxy's container port.
-//
-// The policy selects any pod that envoy-gateway has stamped with its
-// canonical labels (managed-by=envoy-gateway, name=envoy) and allows
-// ingress from anywhere on the well-known data-plane ports:
-//   - 10080/TCP — the shifted-up HTTP listener envoy-gateway configures
-//     for non-root pods to expose Service :80 as targetPort :10080
-//   - 10443/TCP — the shifted-up HTTPS listener envoy-gateway configures
-//     for non-root pods to expose Service :443 as targetPort :10443.
-//   - 19003/TCP — the readiness probe port envoy-gateway itself exposes
-//     on the envoy proxy pod for the LB health check to succeed
-func (d *Deployer) networkPolicyForEnvoyProxies() *networkingv1.NetworkPolicy {
-	httpPort := intstr.FromInt(10080)
-	httpsPort := intstr.FromInt(10443)
-	readyPort := intstr.FromInt(19003)
-	tcp := corev1.ProtocolTCP
+// gatewayClass returns the GatewayClass installed by this extension. Its
+// parametersRef points at the default EnvoyProxy CR (see envoyProxyDefaultsYAML)
+// so every user Gateway inherits the pod labels the shoot's NetworkPolicies
+// require for egress.
+func (d *Deployer) gatewayClass() *gatewayapiv1.GatewayClass {
+	namespace := gatewayapiv1.Namespace(Namespace)
 
-	return &networkingv1.NetworkPolicy{
+	return &gatewayapiv1.GatewayClass{
 		TypeMeta: metav1.TypeMeta{
-			APIVersion: "networking.k8s.io/v1",
-			Kind:       "NetworkPolicy",
+			APIVersion: gatewayapiv1.GroupVersion.String(),
+			Kind:       "GatewayClass",
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      DeploymentName + "-proxies",
-			Namespace: Namespace,
-			Labels:    commonLabels(),
-		},
-		Spec: networkingv1.NetworkPolicySpec{
-			PodSelector: metav1.LabelSelector{
-				MatchLabels: map[string]string{
-					"app.kubernetes.io/managed-by": "envoy-gateway",
-					"app.kubernetes.io/name":       "envoy",
-				},
+			Name: GatewayClassName,
+			Labels: map[string]string{
+				LabelName:      DeploymentName,
+				LabelInstance:  DeploymentName,
+				LabelManagedBy: LabelManagedByValue,
 			},
-			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
-			Ingress: []networkingv1.NetworkPolicyIngressRule{{
-				// Empty From: allow from anywhere. This is a data-plane
-				// ingress path — the whole point of a Gateway is to accept
-				// external traffic, so the security model here is exactly
-				// what the user opted into by creating a Gateway.
-				Ports: []networkingv1.NetworkPolicyPort{
-					{Protocol: &tcp, Port: &httpPort},
-					{Protocol: &tcp, Port: &httpsPort},
-					{Protocol: &tcp, Port: &readyPort},
-				},
-			}},
+		},
+		Spec: gatewayapiv1.GatewayClassSpec{
+			ControllerName: gatewayapiv1.GatewayController(GatewayClassControllerName),
+			ParametersRef: &gatewayapiv1.ParametersReference{
+				Group:     "gateway.envoyproxy.io",
+				Kind:      "EnvoyProxy",
+				Name:      EnvoyProxyDefaultsName,
+				Namespace: &namespace,
+			},
 		},
 	}
-}
-
-// gatewayClassYAML returns the GatewayClass installed by this extension as
-// raw YAML so we don't have to pull sigs.k8s.io/gateway-api into the scheme.
-// The class points at a default EnvoyProxy CR (see envoyProxyDefaultsYAML)
-// via parametersRef so every user Gateway inherits the pod labels the
-// shoot's kube-system NetworkPolicies require for egress.
-func (d *Deployer) gatewayClassYAML() string {
-	return fmt.Sprintf(`apiVersion: gateway.networking.k8s.io/v1
-kind: GatewayClass
-metadata:
-  name: %s
-  labels:
-    %s: %s
-    %s: %s
-    %s: %s
-spec:
-  controllerName: %s
-  parametersRef:
-    group: gateway.envoyproxy.io
-    kind: EnvoyProxy
-    name: %s
-    namespace: %s
-`,
-		GatewayClassName,
-		LabelName, DeploymentName,
-		LabelInstance, DeploymentName,
-		LabelManagedBy, LabelManagedByValue,
-		GatewayClassControllerName,
-		EnvoyProxyDefaultsName,
-		Namespace,
-	)
 }
 
 // envoyProxyDefaultsYAML returns the cluster-default EnvoyProxy CR referenced
@@ -1080,8 +1164,6 @@ spec:
 		fmt.Fprint(&b, indentYAML(marshalResources(d.config.EnvoyProxyDefaults.Resources), 8, "container:\n"))
 	}
 
-	// The pod labels are mandatory: without them Gardener's kube-system
-	// default-deny NetworkPolicies block the data-plane proxy's egress.
 	fmt.Fprint(&b, `        pod:
           labels:
             networking.gardener.cloud/to-apiserver: allowed
@@ -1092,10 +1174,6 @@ spec:
 	return b.String()
 }
 
-// marshalResources renders a ResourceRequirements into YAML under a
-// "resources:" key. Errors are swallowed into an empty string — the caller
-// only reaches this path when Resources is non-nil, and a malformed
-// ResourceList cannot occur from the typed API.
 func marshalResources(r *corev1.ResourceRequirements) string {
 	out, err := sigsyaml.Marshal(map[string]any{"resources": r})
 	if err != nil {
@@ -1105,10 +1183,6 @@ func marshalResources(r *corev1.ResourceRequirements) string {
 	return string(out)
 }
 
-// indentYAML prefixes every non-empty line of s with n spaces and prepends the
-// given header (already at the target indentation). Used to splice a
-// marshalled sub-document into the hand-built EnvoyProxy YAML at the right
-// depth.
 func indentYAML(s string, n int, header string) string {
 	pad := strings.Repeat(" ", n)
 	var b strings.Builder
@@ -1125,4 +1199,125 @@ func indentYAML(s string, n int, header string) string {
 	}
 
 	return b.String()
+}
+
+// validatingAdmissionPolicySupported reports whether the shoot's Kubernetes
+// version serves the admissionregistration.k8s.io/v1 ValidatingAdmissionPolicy
+// API, which went GA in 1.30. An empty or unparseable version is treated as
+// unsupported so the guard is skipped rather than risking a failed apply.
+func (d *Deployer) validatingAdmissionPolicySupported() bool {
+	if d.config.ShootKubernetesVersion == "" {
+		return false
+	}
+	atLeast130, err := versionutils.CompareVersions(d.config.ShootKubernetesVersion, ">=", "1.30")
+	if err != nil {
+		d.logger.Error(err, "failed to parse shoot Kubernetes version; skipping ValidatingAdmissionPolicy guard", "version", d.config.ShootKubernetesVersion)
+
+		return false
+	}
+
+	return atLeast130
+}
+
+// envoyProxyGuard returns the ValidatingAdmissionPolicy and its binding that
+// reject the EnvoyProxy fields an attacker can abuse to escape the data-plane
+// sandbox (patch, initContainers, pod volumes, container volumeMounts, and
+// pod/container securityContext), on both envoyDeployment and envoyDaemonSet.
+func envoyProxyGuard() (*admissionregistrationv1.ValidatingAdmissionPolicy, *admissionregistrationv1.ValidatingAdmissionPolicyBinding) {
+	guardLabels := map[string]string{
+		LabelManagedBy: LabelManagedByValue,
+		LabelName:      EnvoyProxyManagedByValue,
+	}
+	fail := admissionregistrationv1.Fail
+	forbidden := metav1.StatusReasonForbidden
+
+	// Each guarded field is rejected on both the envoyDeployment and the
+	// envoyDaemonSet workload. A validation passes when the workload is unset or
+	// the field is absent, so the expression is built from the workload variable
+	// and the field path. The variable name and its user-facing display name are
+	// kept together so adding a workload cannot desynchronise two parallel slices.
+	guardedFields := []string{"patch", "initContainers", "pod.volumes", "container.volumeMounts", "pod.securityContext", "container.securityContext"}
+	workloads := []struct{ variable, displayName string }{
+		{variable: "deploy", displayName: "envoyDeployment"},
+		{variable: "daemonset", displayName: "envoyDaemonSet"},
+	}
+	validations := make([]admissionregistrationv1.Validation, 0, len(guardedFields)*len(workloads))
+	for _, field := range guardedFields {
+		for _, workload := range workloads {
+			validations = append(validations, admissionregistrationv1.Validation{
+				Expression: fieldAbsentExpression(workload.variable, field),
+				Reason:     &forbidden,
+				Message:    fmt.Sprintf("%s.%s is not permitted on EnvoyProxy", workload.displayName, field),
+			})
+		}
+	}
+
+	policy := &admissionregistrationv1.ValidatingAdmissionPolicy{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: admissionregistrationv1.SchemeGroupVersion.String(),
+			Kind:       "ValidatingAdmissionPolicy",
+		},
+		ObjectMeta: metav1.ObjectMeta{Name: EnvoyProxyGuardPolicyName, Labels: guardLabels},
+		Spec: admissionregistrationv1.ValidatingAdmissionPolicySpec{
+			FailurePolicy: &fail,
+			MatchConstraints: &admissionregistrationv1.MatchResources{
+				ResourceRules: []admissionregistrationv1.NamedRuleWithOperations{{
+					RuleWithOperations: admissionregistrationv1.RuleWithOperations{
+						Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{apiGroupEnvoyGateway},
+							APIVersions: []string{"v1alpha1"},
+							Resources:   []string{"envoyproxies"},
+						},
+					},
+				}},
+			},
+			Variables: []admissionregistrationv1.Variable{
+				{Name: "k8s", Expression: "has(object.spec) && has(object.spec.provider) && has(object.spec.provider.kubernetes) ? object.spec.provider.kubernetes : null"},
+				{Name: "deploy", Expression: "variables.k8s != null && has(variables.k8s.envoyDeployment) ? variables.k8s.envoyDeployment : null"},
+				{Name: "daemonset", Expression: "variables.k8s != null && has(variables.k8s.envoyDaemonSet) ? variables.k8s.envoyDaemonSet : null"},
+			},
+			Validations: validations,
+		},
+	}
+
+	binding := &admissionregistrationv1.ValidatingAdmissionPolicyBinding{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: admissionregistrationv1.SchemeGroupVersion.String(),
+			Kind:       "ValidatingAdmissionPolicyBinding",
+		},
+		ObjectMeta: metav1.ObjectMeta{Name: EnvoyProxyGuardPolicyName, Labels: guardLabels},
+		Spec: admissionregistrationv1.ValidatingAdmissionPolicyBindingSpec{
+			PolicyName:        EnvoyProxyGuardPolicyName,
+			ValidationActions: []admissionregistrationv1.ValidationAction{admissionregistrationv1.Deny},
+			MatchResources: &admissionregistrationv1.MatchResources{
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchExpressions: []metav1.LabelSelectorRequirement{{
+						Key:      "kubernetes.io/metadata.name",
+						Operator: metav1.LabelSelectorOpNotIn,
+						Values:   []string{Namespace},
+					}},
+				},
+			},
+		},
+	}
+
+	return policy, binding
+}
+
+// fieldAbsentExpression builds the CEL guard for a single workload field: the
+// validation passes when the workload is unset or the (possibly nested) field
+// is absent. For example ("deploy", "pod.volumes") yields
+// "variables.deploy == null || !has(variables.deploy.pod) || !has(variables.deploy.pod.volumes)".
+func fieldAbsentExpression(workload, field string) string {
+	parts := strings.Split(field, ".")
+	terms := make([]string, 0, 1+len(parts))
+	terms = append(terms, fmt.Sprintf("variables.%s == null", workload))
+	path := "variables." + workload
+	for _, p := range parts {
+		terms = append(terms, fmt.Sprintf("!has(%s.%s)", path, p))
+		path += "." + p
+	}
+
+	return strings.Join(terms, " || ")
 }
