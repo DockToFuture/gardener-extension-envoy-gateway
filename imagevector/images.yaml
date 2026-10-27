@@ -4,17 +4,20 @@
 
 ---
 images:
-- name: envoy-gateway
-  resourceId:
-    name: envoy-gateway
-  sourceRepository: github.com/envoyproxy/gateway
-  repository: europe-docker.pkg.dev/gardener-project/releases/3rd/envoyproxy/gateway
-  tag: "v1.8.3"
-# gardener-extension-envoy-gateway is this extension's OWN image, used to run the
-# netpol-controller subcommand in the seed. The repository/tag below are only a
-# fallback; the chart overwrites this entry with the running extension's actual
-# image via IMAGEVECTOR_OVERWRITE (see templates/configmap-imagevector-overwrite.yaml).
-- name: gardener-extension-envoy-gateway
-  sourceRepository: github.com/gardener/gardener-extension-envoy-gateway
-  repository: europe-docker.pkg.dev/gardener-project/public/gardener/extensions/gardener-extension-envoy-gateway
-  tag: "latest"
+  - name: envoy-gateway
+    resourceId:
+      name: envoy-gateway
+    sourceRepository: github.com/envoyproxy/gateway
+    repository: europe-docker.pkg.dev/gardener-project/releases/3rd/envoyproxy/gateway
+    tag: "v1.8.3"
+  # gardener-extension-envoy-gateway is this extension's OWN image, used to run the
+  # netpol-controller subcommand in the seed. The repository/tag below are only a
+  # fallback; the chart overwrites this entry with the running extension's actual
+  # image via IMAGEVECTOR_OVERWRITE (see templates/configmap-imagevector-overwrite.yaml).
+  - name: gardener-extension-envoy-gateway
+    sourceRepository: github.com/gardener/gardener-extension-envoy-gateway
+    repository: europe-docker.pkg.dev/gardener-project/public/gardener/extensions/gardener-extension-envoy-gateway
+    # Kept in sync with the VERSION file by `make generate-dev-setup`. Must be a
+    # (relaxed) SemVer, not "latest": the release pipeline uses this tag as the
+    # resource version in the component descriptor and rejects non-SemVer values.
+    tag: "v0.2.0-dev"

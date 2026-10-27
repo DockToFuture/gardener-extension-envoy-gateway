@@ -234,6 +234,8 @@ generate: generate-dev-setup  ## Run code-generator tools.
 .PHONY: generate-dev-setup
 generate-dev-setup:  ## Generate dev-setup example resources (controllerregistration and controllerdeployment).
 	@echo "Generating dev-setup resources ..."
+	@env version="$(VERSION)" \
+		$(GO_TOOL) yq -i '(.images[] | select(.name == "gardener-extension-envoy-gateway") | .tag) = env(version)' $(SRC_ROOT)/imagevector/images.yaml
 	@env ext_name="$(EXTENSION_NAME)" ext_type="$(EXTENSION_TYPE)" registry="$(LOCAL_REGISTRY)" version="$(VERSION)" \
 		$(GO_TOOL) yq -n '.apiVersion = "core.gardener.cloud/v1" | .kind = "ControllerDeployment" | .metadata.name = env(ext_name) | .helm.ociRepository.ref = env(registry) + "/helm-charts/" + env(ext_name) + ":" + env(version) | .helm.values.webhook.enabled = true' \
 		| { echo "---"; cat; } > $(SRC_ROOT)/examples/dev-setup/controllerdeployment.yaml
