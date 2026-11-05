@@ -27,7 +27,7 @@ import (
 
 func netpolTestImageVector(t *testing.T) imagevector.ImageVector {
 	t.Helper()
-	iv, err := imagevector.Read([]byte(`---
+	iv, _, err := imagevector.Read([]byte(`---
 images:
 - name: envoy-gateway
   repository: docker.io/envoyproxy/gateway
