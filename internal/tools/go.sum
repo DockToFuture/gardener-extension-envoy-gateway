@@ -284,8 +284,8 @@ github.com/fxamacker/cbor/v2 v2.9.4 h1:xwjVlxEMR3S605oUlgBjKLTTeGFciYPGYCtF/35LK
 github.com/fxamacker/cbor/v2 v2.9.4/go.mod h1:vM4b+DJCtHn+zz7h3FFp/hDAI9WNWCsZj23V5ytsSxQ=
 github.com/fzipp/gocyclo v0.6.0 h1:lsblElZG7d3ALtGMx9fmxeTKZaLLpU8mET09yN4BBLo=
 github.com/fzipp/gocyclo v0.6.0/go.mod h1:rXPyn8fnlpa0R2csP/31uerbiVBugk5whMdlyaLkLoA=
-github.com/gardener/gardener v1.153.0 h1:oioFuuwZhYOeNVNOb3lKSFZophS8MNUB8nK6mYjWBxo=
-github.com/gardener/gardener v1.153.0/go.mod h1:aQlEtzjcaj0oZqhtL/dCLSgSNIDfouk2slsHTKF7WC0=
+github.com/gardener/gardener v1.153.3 h1:KiY1xiz7fVf50Whq7qVm1NBpZM0MUQM4S3rxqA/KT9U=
+github.com/gardener/gardener v1.153.3/go.mod h1:aQlEtzjcaj0oZqhtL/dCLSgSNIDfouk2slsHTKF7WC0=
 github.com/gardener/gardener/pkg/apis v1.149.0 h1:qGxrTLfO8g9bQFL/XzAcmhIbjW09XBShHkrdThu/Z64=
 github.com/gardener/gardener/pkg/apis v1.149.0/go.mod h1:jWVcJcOtKb9TynpN+Fc1hRfBmwBAPOgwzmhlt8ub2l8=
 github.com/ghostiam/protogetter v1.0.1 h1:q4LLTx2KJHJpxrfO3BniUDWoFkoqWD/UlHhClBlUlLM=
