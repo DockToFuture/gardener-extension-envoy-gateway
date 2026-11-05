@@ -427,4 +427,10 @@ func TestEnvoyProxyDefaultsYAML_RendersDataPlaneKnobs(t *testing.T) {
 			t.Errorf("expected EnvoyProxy defaults YAML to contain %q\n---\n%s", want, out)
 		}
 	}
+
+	// The data plane terminates untrusted internet traffic and has no apiserver
+	// need; the to-apiserver egress label must not be stamped on it.
+	if strings.Contains(out, "networking.gardener.cloud/to-apiserver") {
+		t.Errorf("EnvoyProxy defaults YAML must not grant data-plane pods to-apiserver egress\n---\n%s", out)
+	}
 }
