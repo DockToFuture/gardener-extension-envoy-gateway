@@ -31,7 +31,7 @@ func netpolTestImageVector(t *testing.T) imagevector.ImageVector {
 images:
 - name: envoy-gateway
   repository: docker.io/envoyproxy/gateway
-  tag: "v1.8.3"
+  tag: "v1.9.3"
 - name: gardener-extension-envoy-gateway
   repository: docker.io/gardener/gardener-extension-envoy-gateway
   tag: "test"

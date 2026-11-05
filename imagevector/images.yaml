@@ -9,7 +9,7 @@ images:
       name: envoy-gateway
     sourceRepository: github.com/envoyproxy/gateway
     repository: europe-docker.pkg.dev/gardener-project/releases/3rd/envoyproxy/gateway
-    tag: "v1.8.3"
+    tag: "v1.9.3"
   # gardener-extension-envoy-gateway is this extension's OWN image, used to run the
   # netpol-controller subcommand in the seed. The chart always overwrites this entry
   # via IMAGEVECTOR_OVERWRITE (see templates/configmap-imagevector-overwrite.yaml),

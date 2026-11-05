@@ -17,8 +17,8 @@ for tool in curl helm yq; do
   fi
 done
 
-GATEWAY_API_VERSION="${GATEWAY_API_VERSION:-v1.5.1}"
-ENVOY_GATEWAY_VERSION="${ENVOY_GATEWAY_VERSION:-v1.8.2}"
+GATEWAY_API_VERSION="${GATEWAY_API_VERSION:-v1.6.3}"
+ENVOY_GATEWAY_VERSION="${ENVOY_GATEWAY_VERSION:-v1.9.3}"
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 REPO_ROOT="$( cd "${SCRIPT_DIR}/.." && pwd )"
