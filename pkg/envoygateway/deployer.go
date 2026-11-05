@@ -1113,7 +1113,6 @@ func (d *Deployer) gatewayClass() *gatewayapiv1.GatewayClass {
 // NetworkPolicies in kube-system let the pod reach:
 //   - DNS (for envoy-gateway.kube-system.svc.cluster.local resolution)
 //   - the envoy-gateway xDS server (control-plane pod in kube-system)
-//   - the shoot apiserver (used by envoy-gateway's provisioning path)
 //   - public networks (upstream traffic; user Services may live anywhere)
 //
 // Beyond the mandatory pod labels, it renders the operator-tunable knobs from
@@ -1166,7 +1165,6 @@ spec:
 
 	fmt.Fprint(&b, `        pod:
           labels:
-            networking.gardener.cloud/to-apiserver: allowed
             networking.gardener.cloud/to-dns: allowed
             networking.gardener.cloud/to-public-networks: allowed
 `)

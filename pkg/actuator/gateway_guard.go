@@ -14,6 +14,7 @@ import (
 	extensionsutil "github.com/gardener/gardener/extensions/pkg/util"
 	"github.com/gardener/gardener/pkg/controllerutils"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -94,10 +95,25 @@ func (r *realGatewayLister) fetchGatewayList(ctx context.Context, seedNamespace 
 
 	list := &gatewayapiv1.GatewayList{}
 	if err := shootClient.List(ctx, list); err != nil {
+		// A shoot where the Gateway CRD was never installed (or was already
+		// removed) has no user Gateways by definition. Treat the absent kind as
+		// an empty list so the delete guard does not error permanently and wedge
+		// extension teardown.
+		if gatewayCRDAbsent(err) {
+			return &gatewayapiv1.GatewayList{}, nil
+		}
+
 		return nil, fmt.Errorf("failed to list Gateways in shoot: %w", err)
 	}
 
 	return list, nil
+}
+
+// gatewayCRDAbsent reports whether a List error means the Gateway kind is not
+// served by the shoot API server (CRD never installed or already removed), in
+// which case there are no user Gateways to guard against.
+func gatewayCRDAbsent(err error) bool {
+	return meta.IsNoMatchError(err) || apierrors.IsNotFound(err)
 }
 
 // ClearGatewayClassFinalizer removes the gateway-exists finalizer from the

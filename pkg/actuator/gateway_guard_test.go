@@ -13,7 +13,10 @@ import (
 
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	"github.com/go-logr/logr"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 // testSeedNamespace is the seed-side control-plane namespace used across the
@@ -260,5 +263,39 @@ func TestGatewaysInUseError_TruncatesLongLists(t *testing.T) {
 
 	if !strings.Contains(msg, "and 3 more") {
 		t.Errorf("expected truncation hint in long-list error, got: %s", msg)
+	}
+}
+
+func TestGatewayCRDAbsent(t *testing.T) {
+	gvr := schema.GroupVersionResource{Group: "gateway.networking.k8s.io", Version: "v1", Resource: "gateways"}
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "no kind match (CRD never installed)",
+			err:  &meta.NoKindMatchError{GroupKind: schema.GroupKind{Group: gvr.Group, Kind: "Gateway"}},
+			want: true,
+		},
+		{
+			name: "not found",
+			err:  apierrors.NewNotFound(gvr.GroupResource(), ""),
+			want: true,
+		},
+		{
+			name: "unrelated error is not treated as absent",
+			err:  errors.New("shoot API server unreachable: connection refused"),
+			want: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := gatewayCRDAbsent(tc.err); got != tc.want {
+				t.Errorf("gatewayCRDAbsent(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }

@@ -1,0 +1,51 @@
+{{- if .Values.gardener.virtualCluster.enabled }}
+{{- if semverCompare ">= 1.30-0" .Capabilities.KubeVersion.Version }}
+{{- $saName := .Values.gardener.virtualCluster.serviceAccount.name | default (include "name" .) }}
+{{- $saNamespace := .Values.gardener.virtualCluster.serviceAccount.namespace | default .Release.Namespace }}
+{{- $saUsername := printf "system:serviceaccount:%s:%s" $saNamespace $saName }}
+# RBAC cannot name-scope the `create` verb, so the admission component's
+# virtual-cluster ServiceAccount can create a ValidatingWebhookConfiguration of
+# any name. This policy restricts that identity to creating only its own webhook
+# configuration, closing the window where a compromised admission pod registers
+# an attacker-controlled webhook cluster-wide. Other actors are unaffected: the
+# match condition scopes evaluation to this ServiceAccount.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ include "prefixedName" . }}-webhook-name
+  labels:
+{{ include "labels" . | indent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups:
+      - admissionregistration.k8s.io
+      apiVersions:
+      - "*"
+      operations:
+      - CREATE
+      resources:
+      - validatingwebhookconfigurations
+  matchConditions:
+  - name: only-this-service-account
+    expression: request.userInfo.username == {{ $saUsername | quote }}
+  validations:
+  - expression: object.metadata.name == {{ include "prefixedName" . | quote }}
+    reason: Forbidden
+    message: >-
+      this ServiceAccount may only create the
+      {{ include "prefixedName" . }} ValidatingWebhookConfiguration
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ include "prefixedName" . }}-webhook-name
+  labels:
+{{ include "labels" . | indent 4 }}
+spec:
+  policyName: {{ include "prefixedName" . }}-webhook-name
+  validationActions:
+  - Deny
+{{- end }}
+{{- end }}

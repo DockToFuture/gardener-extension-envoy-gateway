@@ -15,6 +15,8 @@ rules:
   - get
   - list
   - watch
+# Informers need cluster-wide read on extensions; mutating verbs are limited to
+# this extension's own object (shoot-class extensions are named after their type).
 - apiGroups:
   - extensions.gardener.cloud
   resources:
@@ -24,6 +26,14 @@ rules:
   - get
   - list
   - watch
+- apiGroups:
+  - extensions.gardener.cloud
+  resources:
+  - extensions
+  - extensions/status
+  resourceNames:
+  - envoy-gateway
+  verbs:
   - patch
   - update
 - apiGroups:
@@ -42,7 +52,9 @@ rules:
   - list
   - watch
 
-# Permissions required for deploying Envoy Gateway via ManagedResources
+# Permissions required for deploying Envoy Gateway via ManagedResources.
+# create cannot be name-scoped in RBAC; mutating verbs are limited to this
+# extension's own ManagedResource.
 - apiGroups:
   - resources.gardener.cloud
   resources:
@@ -52,6 +64,13 @@ rules:
   - list
   - watch
   - create
+- apiGroups:
+  - resources.gardener.cloud
+  resources:
+  - managedresources
+  resourceNames:
+  - extension-envoy-gateway
+  verbs:
   - update
   - patch
   - delete
@@ -69,7 +88,9 @@ rules:
   - delete
 
 # Permissions required for deploying the per-shoot data-plane NetworkPolicy
-# controller into the shoot's control-plane namespace on the seed.
+# controller into the shoot's control-plane namespace on the seed. create
+# cannot be name-scoped; mutating verbs are limited to the controller's own
+# Deployment.
 - apiGroups:
   - apps
   resources:
@@ -79,6 +100,13 @@ rules:
   - list
   - watch
   - create
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  resourceNames:
+  - envoy-gateway-netpol-controller
+  verbs:
   - update
   - patch
   - delete
