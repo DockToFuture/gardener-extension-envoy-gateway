@@ -14,7 +14,6 @@ import (
 	"fmt"
 
 	networkingv1 "k8s.io/api/networking/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -94,7 +93,7 @@ func (r *Reconciler) namespaceHasManagedGateway(ctx context.Context, namespace s
 // apply creates or updates the given NetworkPolicy, carrying over its labels and
 // spec. The object identity (name/namespace) comes from the desired policy.
 func (r *Reconciler) apply(ctx context.Context, desired *networkingv1.NetworkPolicy) error {
-	obj := &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: desired.Name, Namespace: desired.Namespace}}
+	obj := &networkingv1.NetworkPolicy{Name: desired.Name, Namespace: desired.Namespace}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.ShootClient, obj, func() error {
 		obj.Labels = desired.Labels
 		obj.Spec = desired.Spec
@@ -112,7 +111,7 @@ func (r *Reconciler) apply(ctx context.Context, desired *networkingv1.NetworkPol
 // Gateway namespace: its hop-1 ingress and hop-2 egress policies.
 func (r *Reconciler) pruneNamespace(ctx context.Context, gatewayNs string) error {
 	for _, name := range []string{envoygateway.DataPlaneNetworkPolicyName, envoygateway.ProxyEgressNetworkPolicyName} {
-		obj := &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Namespace: gatewayNs, Name: name}}
+		obj := &networkingv1.NetworkPolicy{Namespace: gatewayNs, Name: name}
 		if err := r.ShootClient.Delete(ctx, obj); client.IgnoreNotFound(err) != nil {
 			return fmt.Errorf("failed to delete NetworkPolicy %s/%s: %w", gatewayNs, name, err)
 		}

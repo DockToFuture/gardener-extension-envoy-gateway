@@ -8,7 +8,6 @@ import (
 	"context"
 
 	networkingv1 "k8s.io/api/networking/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -20,7 +19,7 @@ import (
 // requestFor returns a reconcile.Request keyed by a Gateway namespace. The name
 // is intentionally empty: the controller key is the namespace, not an object.
 func requestFor(gatewayNamespace string) reconcile.Request {
-	return reconcile.Request{NamespacedName: types.NamespacedName{Namespace: gatewayNamespace}}
+	return reconcile.Request{Namespace: gatewayNamespace}
 }
 
 // mapGatewayToRequests enqueues a Gateway's own namespace. The managed-Gateway

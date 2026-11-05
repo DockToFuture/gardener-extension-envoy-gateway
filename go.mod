@@ -1,6 +1,6 @@
 module github.com/gardener/gardener-extension-envoy-gateway
 
-go 1.26.8
+go 1.27.0
 
 require (
 	github.com/gardener/gardener v1.154.2

@@ -112,8 +112,8 @@ func TestNetpolDeployerEnsureCreatesDeploymentAndSecret(t *testing.T) {
 
 func TestNetpolDeployerTeardownRemovesBoth(t *testing.T) {
 	existing := []client.Object{
-		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: envoygateway.NetpolControllerName, Namespace: netpolTestNamespace}},
-		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: shootAccessSecretName(), Namespace: netpolTestNamespace}},
+		&appsv1.Deployment{Name: envoygateway.NetpolControllerName, Namespace: netpolTestNamespace},
+		&corev1.Secret{Name: shootAccessSecretName(), Namespace: netpolTestNamespace},
 	}
 	cl := newNetpolSeedClient(t, existing...)
 	d := NewNetpolControllerDeployer(cl, netpolTestImageVector(t))

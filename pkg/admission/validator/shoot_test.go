@@ -54,11 +54,9 @@ func handleShoot(t *testing.T, v *shootValidator, shoot *gardencorev1beta1.Shoot
 	}
 
 	return v.Handle(context.Background(), admission.Request{
-		AdmissionRequest: admissionv1.AdmissionRequest{
-			Kind:      metav1.GroupVersionKind(schema.FromAPIVersionAndKind("core.gardener.cloud/v1beta1", "Shoot")),
-			Operation: admissionv1.Create,
-			Object:    runtime.RawExtension{Raw: raw},
-		},
+		Kind:      metav1.GroupVersionKind(schema.FromAPIVersionAndKind("core.gardener.cloud/v1beta1", "Shoot")),
+		Operation: admissionv1.Create,
+		Object:    runtime.RawExtension{Raw: raw},
 	})
 }
 

@@ -431,15 +431,11 @@ func podNetworkLabels() map[string]string {
 
 func (d *Deployer) serviceAccount() *corev1.ServiceAccount {
 	return &corev1.ServiceAccount{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "v1",
-			Kind:       kindServiceAccount,
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      ServiceAccountName,
-			Namespace: Namespace,
-			Labels:    commonLabels(),
-		},
+		APIVersion: "v1",
+		Kind:       kindServiceAccount,
+		Name:       ServiceAccountName,
+		Namespace:  Namespace,
+		Labels:     commonLabels(),
 	}
 }
 
@@ -465,15 +461,11 @@ provider:
 `, logLevel, DeployModeGatewayNamespace)
 
 	return &corev1.ConfigMap{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "v1",
-			Kind:       "ConfigMap",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      ConfigMapName,
-			Namespace: Namespace,
-			Labels:    commonLabels(),
-		},
+		APIVersion: "v1",
+		Kind:       "ConfigMap",
+		Name:       ConfigMapName,
+		Namespace:  Namespace,
+		Labels:     commonLabels(),
 		Data: map[string]string{
 			ConfigFileName: cfg,
 		},
@@ -486,16 +478,12 @@ provider:
 // is used to verify those proxies' client certs.
 func (d *Deployer) tlsSecret(tls TLSBundle) *corev1.Secret {
 	return &corev1.Secret{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "v1",
-			Kind:       kindSecret,
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      TLSSecretName,
-			Namespace: Namespace,
-			Labels:    commonLabels(),
-		},
-		Type: corev1.SecretTypeTLS,
+		APIVersion: "v1",
+		Kind:       kindSecret,
+		Name:       TLSSecretName,
+		Namespace:  Namespace,
+		Labels:     commonLabels(),
+		Type:       corev1.SecretTypeTLS,
 		Data: map[string][]byte{
 			"tls.crt": tls.CertPEM,
 			"tls.key": tls.KeyPEM,
@@ -510,16 +498,12 @@ func (d *Deployer) tlsSecret(tls TLSBundle) *corev1.Secret {
 // server cert also signs this one, so the mTLS mesh trusts both directions.
 func (d *Deployer) envoyClientSecret(tls TLSBundle) *corev1.Secret {
 	return &corev1.Secret{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "v1",
-			Kind:       kindSecret,
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      EnvoySecretName,
-			Namespace: Namespace,
-			Labels:    commonLabels(),
-		},
-		Type: corev1.SecretTypeTLS,
+		APIVersion: "v1",
+		Kind:       kindSecret,
+		Name:       EnvoySecretName,
+		Namespace:  Namespace,
+		Labels:     commonLabels(),
+		Type:       corev1.SecretTypeTLS,
 		Data: map[string][]byte{
 			"tls.crt": tls.ClientCertPEM,
 			"tls.key": tls.ClientKeyPEM,
@@ -534,16 +518,12 @@ func (d *Deployer) envoyClientSecret(tls TLSBundle) *corev1.Secret {
 // we always ship it to keep the logs clean.
 func (d *Deployer) hmacSecret(tls TLSBundle) *corev1.Secret {
 	return &corev1.Secret{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "v1",
-			Kind:       kindSecret,
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      HMACSecretName,
-			Namespace: Namespace,
-			Labels:    commonLabels(),
-		},
-		Type: corev1.SecretTypeOpaque,
+		APIVersion: "v1",
+		Kind:       kindSecret,
+		Name:       HMACSecretName,
+		Namespace:  Namespace,
+		Labels:     commonLabels(),
+		Type:       corev1.SecretTypeOpaque,
 		Data: map[string][]byte{
 			HMACSecretKey: tls.HMACBytes,
 		},
@@ -630,28 +610,20 @@ func (d *Deployer) clusterRole() *rbacv1.ClusterRole {
 	}
 
 	return &rbacv1.ClusterRole{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: apiVersionRBAC,
-			Kind:       kindClusterRole,
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   ClusterRoleName,
-			Labels: commonLabels(),
-		},
-		Rules: rules,
+		APIVersion: apiVersionRBAC,
+		Kind:       kindClusterRole,
+		Name:       ClusterRoleName,
+		Labels:     commonLabels(),
+		Rules:      rules,
 	}
 }
 
 func (d *Deployer) clusterRoleBinding() *rbacv1.ClusterRoleBinding {
 	return &rbacv1.ClusterRoleBinding{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: apiVersionRBAC,
-			Kind:       kindClusterRoleBinding,
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   ClusterRoleName,
-			Labels: commonLabels(),
-		},
+		APIVersion: apiVersionRBAC,
+		Kind:       kindClusterRoleBinding,
+		Name:       ClusterRoleName,
+		Labels:     commonLabels(),
 		RoleRef: rbacv1.RoleRef{
 			APIGroup: apiGroupRBAC,
 			Kind:     kindClusterRole,
@@ -672,15 +644,11 @@ func (d *Deployer) clusterRoleBinding() *rbacv1.ClusterRoleBinding {
 // token). It lives in kube-system, where GRM's token-requestor mints tokens.
 func (d *Deployer) netpolControllerServiceAccount() *corev1.ServiceAccount {
 	return &corev1.ServiceAccount{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "v1",
-			Kind:       kindServiceAccount,
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      NetpolControllerServiceAccountName,
-			Namespace: Namespace,
-			Labels:    commonLabels(),
-		},
+		APIVersion: "v1",
+		Kind:       kindServiceAccount,
+		Name:       NetpolControllerServiceAccountName,
+		Namespace:  Namespace,
+		Labels:     commonLabels(),
 	}
 }
 
@@ -703,28 +671,20 @@ func (d *Deployer) netpolControllerClusterRole() *rbacv1.ClusterRole {
 	}
 
 	return &rbacv1.ClusterRole{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: apiVersionRBAC,
-			Kind:       kindClusterRole,
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   NetpolControllerClusterRoleName,
-			Labels: commonLabels(),
-		},
-		Rules: rules,
+		APIVersion: apiVersionRBAC,
+		Kind:       kindClusterRole,
+		Name:       NetpolControllerClusterRoleName,
+		Labels:     commonLabels(),
+		Rules:      rules,
 	}
 }
 
 func (d *Deployer) netpolControllerClusterRoleBinding() *rbacv1.ClusterRoleBinding {
 	return &rbacv1.ClusterRoleBinding{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: apiVersionRBAC,
-			Kind:       kindClusterRoleBinding,
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   NetpolControllerClusterRoleName,
-			Labels: commonLabels(),
-		},
+		APIVersion: apiVersionRBAC,
+		Kind:       kindClusterRoleBinding,
+		Name:       NetpolControllerClusterRoleName,
+		Labels:     commonLabels(),
 		RoleRef: rbacv1.RoleRef{
 			APIGroup: apiGroupRBAC,
 			Kind:     kindClusterRole,
@@ -742,15 +702,11 @@ func (d *Deployer) netpolControllerClusterRoleBinding() *rbacv1.ClusterRoleBindi
 
 func (d *Deployer) leaderElectionRole() *rbacv1.Role {
 	return &rbacv1.Role{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: apiVersionRBAC,
-			Kind:       "Role",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      LeaderElectionRoleName,
-			Namespace: Namespace,
-			Labels:    commonLabels(),
-		},
+		APIVersion: apiVersionRBAC,
+		Kind:       "Role",
+		Name:       LeaderElectionRoleName,
+		Namespace:  Namespace,
+		Labels:     commonLabels(),
 		Rules: []rbacv1.PolicyRule{
 			{
 				APIGroups: []string{"coordination.k8s.io"},
@@ -768,15 +724,11 @@ func (d *Deployer) leaderElectionRole() *rbacv1.Role {
 
 func (d *Deployer) leaderElectionRoleBinding() *rbacv1.RoleBinding {
 	return &rbacv1.RoleBinding{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: apiVersionRBAC,
-			Kind:       "RoleBinding",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      LeaderElectionRoleName,
-			Namespace: Namespace,
-			Labels:    commonLabels(),
-		},
+		APIVersion: apiVersionRBAC,
+		Kind:       "RoleBinding",
+		Name:       LeaderElectionRoleName,
+		Namespace:  Namespace,
+		Labels:     commonLabels(),
 		RoleRef: rbacv1.RoleRef{
 			APIGroup: apiGroupRBAC,
 			Kind:     "Role",
@@ -809,15 +761,11 @@ func (d *Deployer) deployment() (*appsv1.Deployment, error) {
 	}
 
 	return &appsv1.Deployment{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "apps/v1",
-			Kind:       "Deployment",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      DeploymentName,
-			Namespace: Namespace,
-			Labels:    labels,
-		},
+		APIVersion: "apps/v1",
+		Kind:       "Deployment",
+		Name:       DeploymentName,
+		Namespace:  Namespace,
+		Labels:     labels,
 		Spec: appsv1.DeploymentSpec{
 			Replicas: replicas,
 			Selector: &metav1.LabelSelector{
@@ -827,9 +775,7 @@ func (d *Deployer) deployment() (*appsv1.Deployment, error) {
 				},
 			},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: podLabels,
-				},
+				Labels: podLabels,
 				Spec: corev1.PodSpec{
 					ServiceAccountName: ServiceAccountName,
 					Affinity: &corev1.Affinity{
@@ -872,26 +818,20 @@ func (d *Deployer) deployment() (*appsv1.Deployment, error) {
 					Volumes: []corev1.Volume{
 						{
 							Name: "config",
-							VolumeSource: corev1.VolumeSource{
-								ConfigMap: &corev1.ConfigMapVolumeSource{
-									LocalObjectReference: corev1.LocalObjectReference{Name: ConfigMapName},
-								},
+							ConfigMap: &corev1.ConfigMapVolumeSource{
+								Name: ConfigMapName,
 							},
 						},
 						{
 							Name: "certs",
-							VolumeSource: corev1.VolumeSource{
-								Secret: &corev1.SecretVolumeSource{
-									SecretName: TLSSecretName,
-								},
+							Secret: &corev1.SecretVolumeSource{
+								SecretName: TLSSecretName,
 							},
 						},
 						{
 							Name: "wasm-cache",
-							VolumeSource: corev1.VolumeSource{
-								EmptyDir: &corev1.EmptyDirVolumeSource{
-									SizeLimit: new(resource.MustParse("100Mi")),
-								},
+							EmptyDir: &corev1.EmptyDirVolumeSource{
+								SizeLimit: new(resource.MustParse("100Mi")),
 							},
 						},
 					},
@@ -932,21 +872,17 @@ func (d *Deployer) deployment() (*appsv1.Deployment, error) {
 								{Name: "health", ContainerPort: 8081, Protocol: corev1.ProtocolTCP},
 							},
 							LivenessProbe: &corev1.Probe{
-								ProbeHandler: corev1.ProbeHandler{
-									HTTPGet: &corev1.HTTPGetAction{
-										Path: "/healthz",
-										Port: intstr.FromInt(8081),
-									},
+								HTTPGet: &corev1.HTTPGetAction{
+									Path: "/healthz",
+									Port: intstr.FromInt(8081),
 								},
 								InitialDelaySeconds: 15,
 								PeriodSeconds:       20,
 							},
 							ReadinessProbe: &corev1.Probe{
-								ProbeHandler: corev1.ProbeHandler{
-									HTTPGet: &corev1.HTTPGetAction{
-										Path: "/readyz",
-										Port: intstr.FromInt(8081),
-									},
+								HTTPGet: &corev1.HTTPGetAction{
+									Path: "/readyz",
+									Port: intstr.FromInt(8081),
 								},
 								InitialDelaySeconds: 5,
 								PeriodSeconds:       10,
@@ -978,15 +914,11 @@ func (d *Deployer) deployment() (*appsv1.Deployment, error) {
 
 func (d *Deployer) service() *corev1.Service {
 	return &corev1.Service{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "v1",
-			Kind:       "Service",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      DeploymentName,
-			Namespace: Namespace,
-			Labels:    commonLabels(),
-		},
+		APIVersion: "v1",
+		Kind:       "Service",
+		Name:       DeploymentName,
+		Namespace:  Namespace,
+		Labels:     commonLabels(),
 		Spec: corev1.ServiceSpec{
 			Type: corev1.ServiceTypeClusterIP,
 			Selector: map[string]string{
@@ -1003,15 +935,11 @@ func (d *Deployer) service() *corev1.Service {
 
 func (d *Deployer) podDisruptionBudget() *policyv1.PodDisruptionBudget {
 	return &policyv1.PodDisruptionBudget{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "policy/v1",
-			Kind:       "PodDisruptionBudget",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      DeploymentName,
-			Namespace: Namespace,
-			Labels:    commonLabels(),
-		},
+		APIVersion: "policy/v1",
+		Kind:       "PodDisruptionBudget",
+		Name:       DeploymentName,
+		Namespace:  Namespace,
+		Labels:     commonLabels(),
 		Spec: policyv1.PodDisruptionBudgetSpec{
 			MinAvailable: &intstr.IntOrString{Type: intstr.Int, IntVal: 1},
 			Selector: &metav1.LabelSelector{
@@ -1039,15 +967,11 @@ func (d *Deployer) networkPolicy() *networkingv1.NetworkPolicy {
 	tcp := corev1.ProtocolTCP
 
 	return &networkingv1.NetworkPolicy{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "networking.k8s.io/v1",
-			Kind:       "NetworkPolicy",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      DeploymentName,
-			Namespace: Namespace,
-			Labels:    commonLabels(),
-		},
+		APIVersion: "networking.k8s.io/v1",
+		Kind:       "NetworkPolicy",
+		Name:       DeploymentName,
+		Namespace:  Namespace,
+		Labels:     commonLabels(),
 		Spec: networkingv1.NetworkPolicySpec{
 			PodSelector: metav1.LabelSelector{
 				MatchLabels: map[string]string{
@@ -1083,17 +1007,13 @@ func (d *Deployer) gatewayClass() *gatewayapiv1.GatewayClass {
 	namespace := gatewayapiv1.Namespace(Namespace)
 
 	return &gatewayapiv1.GatewayClass{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: gatewayapiv1.GroupVersion.String(),
-			Kind:       "GatewayClass",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name: GatewayClassName,
-			Labels: map[string]string{
-				LabelName:      DeploymentName,
-				LabelInstance:  DeploymentName,
-				LabelManagedBy: LabelManagedByValue,
-			},
+		APIVersion: gatewayapiv1.GroupVersion.String(),
+		Kind:       "GatewayClass",
+		Name:       GatewayClassName,
+		Labels: map[string]string{
+			LabelName:      DeploymentName,
+			LabelInstance:  DeploymentName,
+			LabelManagedBy: LabelManagedByValue,
 		},
 		Spec: gatewayapiv1.GatewayClassSpec{
 			ControllerName: gatewayapiv1.GatewayController(GatewayClassControllerName),
@@ -1251,23 +1171,17 @@ func envoyProxyGuard() (*admissionregistrationv1.ValidatingAdmissionPolicy, *adm
 	}
 
 	policy := &admissionregistrationv1.ValidatingAdmissionPolicy{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: admissionregistrationv1.SchemeGroupVersion.String(),
-			Kind:       "ValidatingAdmissionPolicy",
-		},
-		ObjectMeta: metav1.ObjectMeta{Name: EnvoyProxyGuardPolicyName, Labels: guardLabels},
+		APIVersion: admissionregistrationv1.SchemeGroupVersion.String(),
+		Kind:       "ValidatingAdmissionPolicy",
+		Name:       EnvoyProxyGuardPolicyName, Labels: guardLabels,
 		Spec: admissionregistrationv1.ValidatingAdmissionPolicySpec{
 			FailurePolicy: &fail,
 			MatchConstraints: &admissionregistrationv1.MatchResources{
 				ResourceRules: []admissionregistrationv1.NamedRuleWithOperations{{
-					RuleWithOperations: admissionregistrationv1.RuleWithOperations{
-						Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
-						Rule: admissionregistrationv1.Rule{
-							APIGroups:   []string{apiGroupEnvoyGateway},
-							APIVersions: []string{"v1alpha1"},
-							Resources:   []string{"envoyproxies"},
-						},
-					},
+					Operations:  []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+					APIGroups:   []string{apiGroupEnvoyGateway},
+					APIVersions: []string{"v1alpha1"},
+					Resources:   []string{"envoyproxies"},
 				}},
 			},
 			Variables: []admissionregistrationv1.Variable{
@@ -1280,11 +1194,9 @@ func envoyProxyGuard() (*admissionregistrationv1.ValidatingAdmissionPolicy, *adm
 	}
 
 	binding := &admissionregistrationv1.ValidatingAdmissionPolicyBinding{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: admissionregistrationv1.SchemeGroupVersion.String(),
-			Kind:       "ValidatingAdmissionPolicyBinding",
-		},
-		ObjectMeta: metav1.ObjectMeta{Name: EnvoyProxyGuardPolicyName, Labels: guardLabels},
+		APIVersion: admissionregistrationv1.SchemeGroupVersion.String(),
+		Kind:       "ValidatingAdmissionPolicyBinding",
+		Name:       EnvoyProxyGuardPolicyName, Labels: guardLabels,
 		Spec: admissionregistrationv1.ValidatingAdmissionPolicyBindingSpec{
 			PolicyName:        EnvoyProxyGuardPolicyName,
 			ValidationActions: []admissionregistrationv1.ValidationAction{admissionregistrationv1.Deny},

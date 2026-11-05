@@ -59,11 +59,9 @@ func DataPlaneProxyIngressPolicy(namespace string) *networkingv1.NetworkPolicy {
 	tcp := corev1.ProtocolTCP
 
 	return &networkingv1.NetworkPolicy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      DataPlaneNetworkPolicyName,
-			Namespace: namespace,
-			Labels:    managedLabels(DataPlaneNetworkPolicyName, HopProxyIngress),
-		},
+		Name:      DataPlaneNetworkPolicyName,
+		Namespace: namespace,
+		Labels:    managedLabels(DataPlaneNetworkPolicyName, HopProxyIngress),
 		Spec: networkingv1.NetworkPolicySpec{
 			PodSelector: proxyPodSelector(),
 			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
@@ -126,11 +124,9 @@ func ProxyEgressPolicy(gatewayNamespace string) *networkingv1.NetworkPolicy {
 	}
 
 	return &networkingv1.NetworkPolicy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      ProxyEgressNetworkPolicyName,
-			Namespace: gatewayNamespace,
-			Labels:    managedLabels(ProxyEgressNetworkPolicyName, HopProxyEgress),
-		},
+		Name:      ProxyEgressNetworkPolicyName,
+		Namespace: gatewayNamespace,
+		Labels:    managedLabels(ProxyEgressNetworkPolicyName, HopProxyEgress),
 		Spec: networkingv1.NetworkPolicySpec{
 			PodSelector: proxyPodSelector(),
 			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},

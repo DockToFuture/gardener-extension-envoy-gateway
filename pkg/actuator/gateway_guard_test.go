@@ -121,7 +121,7 @@ func TestCheckNoUserGateways_ShootBeingDeleted_WaitsForGateways(t *testing.T) {
 	f := &fakeLister{names: []string{testGatewayName}}
 	a := newActuatorForTest(t, f)
 	now := metav1.NewTime(time.Now())
-	shoot := &gardencorev1beta1.Shoot{ObjectMeta: metav1.ObjectMeta{DeletionTimestamp: &now}}
+	shoot := &gardencorev1beta1.Shoot{DeletionTimestamp: &now}
 
 	if err := a.checkNoUserGateways(context.Background(), logr.Discard(), shoot, testSeedNamespace); err != nil {
 		t.Fatalf("expected nil error when shoot is being deleted, got: %v", err)
@@ -139,7 +139,7 @@ func TestCheckNoUserGateways_ShootBeingDeleted_GatewaysStillPresent_Requeues(t *
 	f := &fakeLister{waitErr: ErrGatewaysStillDeleting}
 	a := newActuatorForTest(t, f)
 	now := metav1.NewTime(time.Now())
-	shoot := &gardencorev1beta1.Shoot{ObjectMeta: metav1.ObjectMeta{DeletionTimestamp: &now}}
+	shoot := &gardencorev1beta1.Shoot{DeletionTimestamp: &now}
 
 	// Gateways still present with a reachable API server must requeue, not
 	// proceed to clear the finalizer and orphan LB Services.
@@ -156,7 +156,7 @@ func TestCheckNoUserGateways_ShootBeingDeleted_APIServerGone_DoesNotWedge(t *tes
 	f := &fakeLister{waitErr: errors.New("shoot API server unreachable: connection refused")}
 	a := newActuatorForTest(t, f)
 	now := metav1.NewTime(time.Now())
-	shoot := &gardencorev1beta1.Shoot{ObjectMeta: metav1.ObjectMeta{DeletionTimestamp: &now}}
+	shoot := &gardencorev1beta1.Shoot{DeletionTimestamp: &now}
 
 	// An unreachable API server must not wedge deletion: proceed and clear.
 	if err := a.checkNoUserGateways(context.Background(), logr.Discard(), shoot, testSeedNamespace); err != nil {
@@ -171,7 +171,7 @@ func TestCheckNoUserGateways_ShootBeingDeleted_DeleteErrorDoesNotWedge(t *testin
 	f := &fakeLister{deleteErr: errors.New("shoot api server unreachable")}
 	a := newActuatorForTest(t, f)
 	now := metav1.NewTime(time.Now())
-	shoot := &gardencorev1beta1.Shoot{ObjectMeta: metav1.ObjectMeta{DeletionTimestamp: &now}}
+	shoot := &gardencorev1beta1.Shoot{DeletionTimestamp: &now}
 
 	// A delete failure is logged, not fatal; the flow still reaches the finalizer.
 	if err := a.checkNoUserGateways(context.Background(), logr.Discard(), shoot, testSeedNamespace); err != nil {
@@ -189,7 +189,7 @@ func TestCheckNoUserGateways_ShootBeingDeleted_BypassesGuard(t *testing.T) {
 	f := &fakeLister{names: []string{testGatewayName}}
 	a := newActuatorForTest(t, f)
 	now := metav1.NewTime(time.Now())
-	shoot := &gardencorev1beta1.Shoot{ObjectMeta: metav1.ObjectMeta{DeletionTimestamp: &now}}
+	shoot := &gardencorev1beta1.Shoot{DeletionTimestamp: &now}
 
 	if err := a.checkNoUserGateways(context.Background(), logr.Discard(), shoot, testSeedNamespace); err != nil {
 		t.Fatalf("expected nil error when shoot is being deleted, got: %v", err)
@@ -206,7 +206,7 @@ func TestCheckNoUserGateways_ShootBeingDeleted_ClearErrorDoesNotBlock(t *testing
 	f := &fakeLister{clearErr: errors.New("shoot api server unreachable")}
 	a := newActuatorForTest(t, f)
 	now := metav1.NewTime(time.Now())
-	shoot := &gardencorev1beta1.Shoot{ObjectMeta: metav1.ObjectMeta{DeletionTimestamp: &now}}
+	shoot := &gardencorev1beta1.Shoot{DeletionTimestamp: &now}
 
 	// A finalizer-clear failure must not turn a clean delete into a hang.
 	if err := a.checkNoUserGateways(context.Background(), logr.Discard(), shoot, testSeedNamespace); err != nil {

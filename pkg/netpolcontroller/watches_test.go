@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	networkingv1 "k8s.io/api/networking/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -32,7 +31,7 @@ func requestNamespaces(reqs []reconcile.Request) []string {
 
 func TestMapGatewayToRequests(t *testing.T) {
 	r := &Reconciler{}
-	gw := &gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{Name: "gw", Namespace: testNsGateway}}
+	gw := &gatewayv1.Gateway{Name: "gw", Namespace: testNsGateway}
 
 	got := requestNamespaces(r.mapGatewayToRequests(context.Background(), gw))
 	if want := []string{testNsGateway}; !slices.Equal(got, want) {
@@ -48,29 +47,29 @@ func TestMapManagedPolicyToRequests(t *testing.T) {
 	}{
 		{
 			name: "hop-1 proxy ingress maps to its own namespace",
-			policy: &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{
+			policy: &networkingv1.NetworkPolicy{
 				Name:      envoygateway.DataPlaneNetworkPolicyName,
 				Namespace: testNsGateway,
 				Labels:    map[string]string{envoygateway.LabelHop: string(envoygateway.HopProxyIngress)},
-			}},
+			},
 			want: []string{testNsGateway},
 		},
 		{
 			name: "hop-2 proxy egress maps to its own namespace",
-			policy: &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{
+			policy: &networkingv1.NetworkPolicy{
 				Name:      envoygateway.ProxyEgressNetworkPolicyName,
 				Namespace: testNsGateway,
 				Labels:    map[string]string{envoygateway.LabelHop: string(envoygateway.HopProxyEgress)},
-			}},
+			},
 			want: []string{testNsGateway},
 		},
 		{
 			name: "a policy without a managed hop label yields nothing",
-			policy: &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{
+			policy: &networkingv1.NetworkPolicy{
 				Name:      "something-else",
 				Namespace: testNsGateway,
 				Labels:    map[string]string{},
-			}},
+			},
 			want: []string{},
 		},
 	}
@@ -105,13 +104,13 @@ func TestManagedGatewayPredicate(t *testing.T) {
 func TestManagedPolicyPredicate(t *testing.T) {
 	p := managedPolicyPredicate()
 
-	managed := &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{
+	managed := &networkingv1.NetworkPolicy{Labels: map[string]string{
 		envoygateway.LabelManagedBy: envoygateway.LabelManagedByValue,
 		envoygateway.LabelHop:       string(envoygateway.HopProxyIngress),
-	}}}
-	foreign := &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{
+	}}
+	foreign := &networkingv1.NetworkPolicy{Labels: map[string]string{
 		envoygateway.LabelManagedBy: "someone-else",
-	}}}
+	}}
 
 	// Create must pass for managed policies: the informer replays existing
 	// policies as creates on (re)start, and that is what prunes policies

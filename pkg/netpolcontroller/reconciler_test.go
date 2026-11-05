@@ -10,7 +10,6 @@ import (
 
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -37,8 +36,9 @@ func reconcilerTestScheme(t *testing.T) *runtime.Scheme {
 
 func managedGateway() *gatewayv1.Gateway {
 	return &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{Name: "gw", Namespace: testNsGateway},
-		Spec:       gatewayv1.GatewaySpec{GatewayClassName: envoygateway.GatewayClassName},
+		Name:      "gw",
+		Namespace: testNsGateway,
+		Spec:      gatewayv1.GatewaySpec{GatewayClassName: envoygateway.GatewayClassName},
 	}
 }
 

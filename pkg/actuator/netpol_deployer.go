@@ -79,7 +79,7 @@ func (d *netpolControllerDeployer) Ensure(ctx context.Context, logger logr.Logge
 		return fmt.Errorf("failed to inject generic kubeconfig into netpol-controller Deployment: %w", err)
 	}
 
-	obj := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: envoygateway.NetpolControllerName, Namespace: seedNamespace}}
+	obj := &appsv1.Deployment{Name: envoygateway.NetpolControllerName, Namespace: seedNamespace}
 	_, err = controllerutil.CreateOrUpdate(ctx, d.seedClient, obj, func() error {
 		obj.Labels = deployment.Labels
 		obj.Spec = deployment.Spec
@@ -97,8 +97,8 @@ func (d *netpolControllerDeployer) Ensure(ctx context.Context, logger logr.Logge
 
 func (d *netpolControllerDeployer) Teardown(ctx context.Context, logger logr.Logger, seedNamespace string) error {
 	objs := []client.Object{
-		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: envoygateway.NetpolControllerName, Namespace: seedNamespace}},
-		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: gardenerutils.SecretNamePrefixShootAccess + envoygateway.NetpolControllerShootAccessSecretName, Namespace: seedNamespace}},
+		&appsv1.Deployment{Name: envoygateway.NetpolControllerName, Namespace: seedNamespace},
+		&corev1.Secret{Name: gardenerutils.SecretNamePrefixShootAccess + envoygateway.NetpolControllerShootAccessSecretName, Namespace: seedNamespace},
 	}
 	for _, obj := range objs {
 		if err := d.seedClient.Delete(ctx, obj); client.IgnoreNotFound(err) != nil {
@@ -112,7 +112,7 @@ func (d *netpolControllerDeployer) Teardown(ctx context.Context, logger logr.Log
 }
 
 func (d *netpolControllerDeployer) ScaleDown(ctx context.Context, logger logr.Logger, seedNamespace string) error {
-	deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: envoygateway.NetpolControllerName, Namespace: seedNamespace}}
+	deployment := &appsv1.Deployment{Name: envoygateway.NetpolControllerName, Namespace: seedNamespace}
 	if err := d.seedClient.Get(ctx, client.ObjectKeyFromObject(deployment), deployment); err != nil {
 		// Nothing to scale down if it was never deployed.
 		return client.IgnoreNotFound(err)
@@ -158,16 +158,14 @@ func (d *netpolControllerDeployer) deployment(seedNamespace string) (*appsv1.Dep
 	}
 
 	return &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      envoygateway.NetpolControllerName,
-			Namespace: seedNamespace,
-			Labels:    labels,
-		},
+		Name:      envoygateway.NetpolControllerName,
+		Namespace: seedNamespace,
+		Labels:    labels,
 		Spec: appsv1.DeploymentSpec{
 			Replicas: ptr.To[int32](1),
 			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{envoygateway.LabelName: envoygateway.NetpolControllerName}},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: podLabels},
+				Labels: podLabels,
 				Spec: corev1.PodSpec{
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot: new(true),
