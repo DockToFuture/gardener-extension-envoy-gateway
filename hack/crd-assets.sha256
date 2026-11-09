@@ -1,0 +1,7 @@
+# Pinned integrity manifest for hack/update-crds.sh assets.
+# Regenerate with: REGENERATE_CHECKSUMS=1 hack/update-crds.sh
+# gateway-api <version> : v1.6.3
+# envoy-gateway <version> : v1.9.3
+gateway-api-standard.yaml     356c2b8e286a964dc20995435659ad1095386329974793af10bbfe3eff977fe5
+gateway-api-experimental.yaml 72f549ff57416e2e1085c5be1718f5f86108aa75ac39b4bc27c1c7aef1497127
+chart:envoyproxy/gateway-helm@sha256:be1b8f163a338f94e7d6532336c08d6856fc70a0b790ac14a2826a54d23e0dd3
