@@ -82,8 +82,10 @@ if [[ -z "${REGENERATE}" ]]; then
 fi
 
 # fetch_and_verify <url> <asset-filename>
-# Downloads to the temp dir, then either records (regen) or verifies (normal)
-# the checksum. The file is copied into ASSETS_DIR only once it is trusted.
+# Downloads to the temp dir and either records (regen) or verifies (normal) the
+# checksum. Nothing is written to ASSETS_DIR here: all artifacts are staged in
+# the temp dir and copied over in one step only after every check has passed,
+# so a failure partway through never leaves the embedded assets half-updated.
 fetch_and_verify() {
   local url="$1" name="$2" tmp="${TMP_DIR}/$2" got want
   echo "Downloading ${name} ..."
@@ -92,7 +94,6 @@ fetch_and_verify() {
 
   if [[ -n "${REGENERATE}" ]]; then
     NEW_HASH["${name}"]="${got}"
-    cp "${tmp}" "${ASSETS_DIR}/${name}"
     echo "  recorded ${name} ${got}"
     return 0
   fi
@@ -110,7 +111,6 @@ fetch_and_verify() {
     mismatch_hint
     exit 1
   fi
-  cp "${tmp}" "${ASSETS_DIR}/${name}"
   echo "  verified ${name}"
 }
 
@@ -171,7 +171,14 @@ helm template envoy-gateway "${chart_tgz}" \
 # the gateway-api-*.yaml assets and must not be duplicated here.
 yq eval-all 'select(.kind == "CustomResourceDefinition" and .spec.group == "gateway.envoyproxy.io")' \
   "${TMP_DIR}/envoy-gateway.yaml" > "${TMP_DIR}/${ENVOY_CRDS_YAML}"
-cp "${TMP_DIR}/${ENVOY_CRDS_YAML}" "${ASSETS_DIR}/${ENVOY_CRDS_YAML}"
+
+# --- All downloads verified (or recorded) and the chart rendered. Only now,
+# after every check has passed, copy the staged artifacts into ASSETS_DIR in
+# one step. A failure in any earlier step exits before this point, leaving the
+# embedded assets untouched rather than half-updated. ---
+cp "${TMP_DIR}/${STANDARD_YAML}"     "${ASSETS_DIR}/${STANDARD_YAML}"
+cp "${TMP_DIR}/${EXPERIMENTAL_YAML}" "${ASSETS_DIR}/${EXPERIMENTAL_YAML}"
+cp "${TMP_DIR}/${ENVOY_CRDS_YAML}"   "${ASSETS_DIR}/${ENVOY_CRDS_YAML}"
 
 # --- Regen mode: rewrite the pin manifest atomically. ---
 if [[ -n "${REGENERATE}" ]]; then
