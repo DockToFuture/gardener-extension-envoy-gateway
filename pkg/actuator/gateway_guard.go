@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	extensionsconfigv1alpha1 "github.com/gardener/gardener/extensions/pkg/apis/config/v1alpha1"
@@ -15,9 +16,11 @@ import (
 	"github.com/gardener/gardener/pkg/controllerutils"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	gatewayapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/gardener/gardener-extension-envoy-gateway/pkg/envoygateway"
@@ -47,8 +50,10 @@ type GatewayLister interface {
 	ListGateways(ctx context.Context, seedNamespace string) ([]string, error)
 
 	// ClearGatewayClassFinalizer removes the gateway-exists finalizer from the
-	// extension's GatewayClass in the shoot.
-	ClearGatewayClassFinalizer(ctx context.Context, seedNamespace string) error
+	// extension's GatewayClass in the shoot. It reports whether the finalizer was
+	// actually present (and thus removed), so callers can surface a stray
+	// finalizer that would otherwise silently wedge teardown.
+	ClearGatewayClassFinalizer(ctx context.Context, seedNamespace string) (removed bool, err error)
 
 	// DeleteGateways deletes all Gateway objects across all namespaces in the
 	// shoot identified by the given seed-side control-plane namespace.
@@ -57,6 +62,11 @@ type GatewayLister interface {
 	// WaitUntilGatewaysDeleted blocks until no Gateway objects remain in the
 	// shoot, or the context is done.
 	WaitUntilGatewaysDeleted(ctx context.Context, seedNamespace string) error
+
+	// WaitUntilGatewayCreationBlocked blocks until a dry-run create of a Gateway
+	// for the extension's GatewayClass is forbidden, i.e. the block-gateway-creation
+	// policy is enforcing, or the context deadline is reached.
+	WaitUntilGatewayCreationBlocked(ctx context.Context, seedNamespace string) error
 }
 
 // realGatewayLister builds a shoot client from the seed and lists Gateway
@@ -85,8 +95,10 @@ func (r *realGatewayLister) ListGateways(ctx context.Context, seedNamespace stri
 	return names, nil
 }
 
-// fetchGatewayList builds a shoot-scoped client and returns the raw GatewayList.
-// The delete guard derives from it.
+// fetchGatewayList builds a shoot-scoped client and returns the Gateways bound
+// to this extension's GatewayClass. Gateways of other GatewayClasses are not
+// ours and must not block the extension's delete/disable, so they are filtered
+// out. The delete guard derives from this.
 func (r *realGatewayLister) fetchGatewayList(ctx context.Context, seedNamespace string) (*gatewayapiv1.GatewayList, error) {
 	shootClient, err := r.shootClient(ctx, seedNamespace)
 	if err != nil {
@@ -106,7 +118,22 @@ func (r *realGatewayLister) fetchGatewayList(ctx context.Context, seedNamespace 
 		return nil, fmt.Errorf("failed to list Gateways in shoot: %w", err)
 	}
 
+	list.Items = filterManagedGateways(list.Items)
+
 	return list, nil
+}
+
+// filterManagedGateways keeps only Gateways bound to this extension's
+// GatewayClass; Gateways of other GatewayClasses are not ours.
+func filterManagedGateways(items []gatewayapiv1.Gateway) []gatewayapiv1.Gateway {
+	ours := items[:0]
+	for _, g := range items {
+		if string(g.Spec.GatewayClassName) == envoygateway.GatewayClassName {
+			ours = append(ours, g)
+		}
+	}
+
+	return ours
 }
 
 // gatewayCRDAbsent reports whether a List error means the Gateway kind is not
@@ -118,39 +145,44 @@ func gatewayCRDAbsent(err error) bool {
 
 // ClearGatewayClassFinalizer removes the gateway-exists finalizer from the
 // extension's GatewayClass so it can finish deleting once the envoy-gateway
-// control plane is gone.
-func (r *realGatewayLister) ClearGatewayClassFinalizer(ctx context.Context, seedNamespace string) error {
+// control plane is gone. It reports whether the finalizer was present.
+func (r *realGatewayLister) ClearGatewayClassFinalizer(ctx context.Context, seedNamespace string) (bool, error) {
 	shootClient, err := r.shootClient(ctx, seedNamespace)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	gwc := &gatewayapiv1.GatewayClass{}
 	if err := shootClient.Get(ctx, client.ObjectKey{Name: envoygateway.GatewayClassName}, gwc); err != nil {
 		if apierrors.IsNotFound(err) {
-			return nil
+			return false, nil
 		}
 
-		return fmt.Errorf("failed to get GatewayClass %q in shoot: %w", envoygateway.GatewayClassName, err)
+		return false, fmt.Errorf("failed to get GatewayClass %q in shoot: %w", envoygateway.GatewayClassName, err)
+	}
+
+	if !controllerutil.ContainsFinalizer(gwc, gatewayExistsFinalizer) {
+		return false, nil
 	}
 
 	if err := controllerutils.RemoveFinalizers(ctx, shootClient, gwc, gatewayExistsFinalizer); err != nil {
-		return fmt.Errorf("failed to clear %q finalizer from GatewayClass %q: %w", gatewayExistsFinalizer, envoygateway.GatewayClassName, err)
+		return false, fmt.Errorf("failed to clear %q finalizer from GatewayClass %q: %w", gatewayExistsFinalizer, envoygateway.GatewayClassName, err)
 	}
 
-	return nil
+	return true, nil
 }
 
-// DeleteGateways deletes all Gateway objects in the shoot.
+// DeleteGateways deletes the Gateways bound to this extension's GatewayClass in
+// the shoot. Gateways of other GatewayClasses are left untouched.
 func (r *realGatewayLister) DeleteGateways(ctx context.Context, seedNamespace string) error {
 	shootClient, err := r.shootClient(ctx, seedNamespace)
 	if err != nil {
 		return err
 	}
 
-	list := &gatewayapiv1.GatewayList{}
-	if err := shootClient.List(ctx, list); err != nil {
-		return fmt.Errorf("failed to list Gateways in shoot: %w", err)
+	list, err := r.fetchGatewayList(ctx, seedNamespace)
+	if err != nil {
+		return err
 	}
 
 	for i := range list.Items {
@@ -194,6 +226,53 @@ func (r *realGatewayLister) WaitUntilGatewaysDeleted(ctx context.Context, seedNa
 	}
 
 	return ErrGatewaysStillDeleting
+}
+
+// WaitUntilGatewayCreationBlocked polls with a dry-run Gateway create (never
+// persisted) until admission forbids it, proving the block-gateway-creation
+// policy is enforcing rather than merely present.
+func (r *realGatewayLister) WaitUntilGatewayCreationBlocked(ctx context.Context, seedNamespace string) error {
+	shootClient, err := r.shootClient(ctx, seedNamespace)
+	if err != nil {
+		return err
+	}
+
+	probe := func() *gatewayapiv1.Gateway {
+		return &gatewayapiv1.Gateway{
+			GenerateName: "envoy-gateway-guard-probe-", Namespace: metav1.NamespaceDefault,
+			Spec: gatewayapiv1.GatewaySpec{
+				GatewayClassName: gatewayapiv1.ObjectName(envoygateway.GatewayClassName),
+				Listeners: []gatewayapiv1.Listener{{
+					Name:     "probe",
+					Protocol: gatewayapiv1.HTTPProtocolType,
+					Port:     gatewayapiv1.PortNumber(80),
+				}},
+			},
+		}
+	}
+
+	waitErr := wait.PollUntilContextCancel(ctx, gatewayDeletionPollInterval, true, func(ctx context.Context) (bool, error) {
+		err := shootClient.Create(ctx, probe(), client.DryRunAll)
+		// Only a denial by our policy counts as "enforcing". A bare IsForbidden
+		// is ambiguous — an RBAC authorization failure is also 403 — so match the
+		// policy name in the message to avoid mistaking a missing permission for
+		// the guard being in effect. Admitted or a transient error = keep polling.
+		return deniedByGuardPolicy(err), nil
+	})
+	if waitErr != nil {
+		return fmt.Errorf("gave up waiting for the block-gateway-creation policy to take effect: %w", waitErr)
+	}
+
+	return nil
+}
+
+// deniedByGuardPolicy reports whether err is an admission denial from this
+// extension's block-gateway-creation ValidatingAdmissionPolicy, as opposed to
+// an RBAC authorization failure (which is also Forbidden) or any other error.
+// ValidatingAdmissionPolicy denials surface the policy name in the status
+// message, so require both Forbidden and the policy name.
+func deniedByGuardPolicy(err error) bool {
+	return apierrors.IsForbidden(err) && strings.Contains(err.Error(), envoygateway.GatewayCreateGuardPolicyName)
 }
 
 func (r *realGatewayLister) shootClient(ctx context.Context, seedNamespace string) (client.Client, error) {

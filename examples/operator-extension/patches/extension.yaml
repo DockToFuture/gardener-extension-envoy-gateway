@@ -11,13 +11,13 @@ spec:
       values:
         image:
           repository: europe-docker.pkg.dev/gardener-project/public/gardener/extensions/gardener-extension-envoy-gateway
-          tag: latest
+          tag: v0.2.0
       virtualCluster: {}
     extension:
       values:
         image:
           repository: europe-docker.pkg.dev/gardener-project/public/gardener/extensions/gardener-extension-envoy-gateway
-          tag: latest
+          tag: v0.2.0
         replicaCount: 1
         resources:
           requests:

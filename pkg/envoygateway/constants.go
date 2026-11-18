@@ -29,6 +29,10 @@ const (
 	// delivers all Envoy Gateway resources into the shoot cluster.
 	ManagedResourceName = "extension-envoy-gateway"
 
+	// GuardManagedResourceName is the short-lived shoot-class ManagedResource
+	// delivering the Gateway-creation guard during disable.
+	GuardManagedResourceName = "extension-envoy-gateway-guard"
+
 	// ImageName is the key for the Envoy Gateway controller image in imagevector.
 	ImageName = "envoy-gateway"
 
@@ -65,6 +69,11 @@ const (
 	// its binding) that rejects dangerous EnvoyProxy fields (patch, initContainers,
 	// arbitrary volumes/volumeMounts/securityContext) at admission.
 	EnvoyProxyGuardPolicyName = "envoyproxy-deploy-guard.gardener.cloud"
+
+	// GatewayCreateGuardPolicyName names the ValidatingAdmissionPolicy (and its
+	// binding) that blocks creating Gateways for this extension's GatewayClass
+	// while the extension is being disabled.
+	GatewayCreateGuardPolicyName = "block-gateway-creation.gardener.cloud"
 
 	// DataPlaneNetworkPolicyName is the name of the per-Gateway-namespace
 	// data-plane ingress NetworkPolicy the extension reconciles directly into the
@@ -153,11 +162,17 @@ const (
 	kindClusterRole = "ClusterRole"
 	// kindClusterRoleBinding is the Kubernetes Kind name for ClusterRoleBinding.
 	kindClusterRoleBinding = "ClusterRoleBinding"
+	// kindValidatingAdmissionPolicy is the Kubernetes Kind name for ValidatingAdmissionPolicy.
+	kindValidatingAdmissionPolicy = "ValidatingAdmissionPolicy"
+	// kindValidatingAdmissionPolicyBinding is the Kubernetes Kind name for ValidatingAdmissionPolicyBinding.
+	kindValidatingAdmissionPolicyBinding = "ValidatingAdmissionPolicyBinding"
 
 	// APIGroupGatewayAPI is the Gateway API resource group.
 	APIGroupGatewayAPI = "gateway.networking.k8s.io"
 	// apiGroupEnvoyGateway is the Envoy Gateway resource group.
 	apiGroupEnvoyGateway = "gateway.envoyproxy.io"
+	// resourceGateways is the Gateway API plural resource name for Gateways.
+	resourceGateways = "gateways"
 
 	// OwningGatewayNameLabel is the label envoy-gateway stamps on every
 	// per-Gateway data-plane infra object (Deployment, Service, ServiceAccount,

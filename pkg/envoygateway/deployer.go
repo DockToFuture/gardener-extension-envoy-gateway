@@ -47,6 +47,15 @@ const (
 	// ManagedResourceDeletionTimeout is the maximum time to wait for a
 	// ManagedResource to be deleted before timing out.
 	ManagedResourceDeletionTimeout = 2 * time.Minute
+
+	// ManagedResourceHealthTimeout is the maximum time to wait for a
+	// ManagedResource to become healthy after being applied.
+	ManagedResourceHealthTimeout = 2 * time.Minute
+
+	// GatewayGuardEnforcementTimeout bounds how long the disable path waits for
+	// the block-gateway-creation policy to start rejecting Gateway creates after
+	// its objects are applied (a policy is not enforced the instant it exists).
+	GatewayGuardEnforcementTimeout = 2 * time.Minute
 )
 
 //go:embed assets/gateway-api-standard.yaml
@@ -219,6 +228,49 @@ func (d *Deployer) deleteManagedResource(ctx context.Context, namespace string) 
 	}
 
 	d.logger.Info("successfully deleted envoy-gateway", "namespace", namespace)
+
+	return nil
+}
+
+// DeployGuard installs the Gateway-creation guard as its own ManagedResource and
+// waits for GRM to report it healthy (objects applied). Enforcement is confirmed
+// separately by the caller via GatewayLister.WaitUntilGatewayCreationBlocked.
+func (d *Deployer) DeployGuard(ctx context.Context, namespace string) error {
+	d.logger.Info("installing Gateway-creation guard before disabling envoy-gateway", "namespace", namespace)
+
+	serialized, err := d.buildGuardResources()
+	if err != nil {
+		return fmt.Errorf("failed to serialize Gateway-creation guard: %w", err)
+	}
+
+	if err := managedresources.CreateForShoot(ctx, d.client, namespace, GuardManagedResourceName, GuardManagedResourceName, false, serialized); err != nil {
+		return fmt.Errorf("failed to create Gateway-creation guard managed resource: %w", err)
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, ManagedResourceHealthTimeout)
+	defer cancel()
+	if err := managedresources.WaitUntilHealthy(timeoutCtx, d.client, namespace, GuardManagedResourceName); err != nil {
+		return fmt.Errorf("gateway-creation guard managed resource did not become healthy: %w", err)
+	}
+
+	d.logger.Info("Gateway-creation guard applied", "namespace", namespace)
+
+	return nil
+}
+
+// DeleteGuard removes the Gateway-creation guard ManagedResource. It is
+// idempotent: deleting an absent guard is not an error, so it is safe to call
+// on the teardown success path and from a reconcile-time sweep.
+func (d *Deployer) DeleteGuard(ctx context.Context, namespace string) error {
+	if err := managedresources.Delete(ctx, d.client, namespace, GuardManagedResourceName, true); err != nil {
+		return fmt.Errorf("failed to delete Gateway-creation guard managed resource: %w", err)
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, ManagedResourceDeletionTimeout)
+	defer cancel()
+	if err := managedresources.WaitUntilDeleted(timeoutCtx, d.client, namespace, GuardManagedResourceName); err != nil {
+		return fmt.Errorf("timed out waiting for Gateway-creation guard managed resource to be deleted: %w", err)
+	}
 
 	return nil
 }
@@ -589,7 +641,7 @@ func (d *Deployer) clusterRole() *rbacv1.ClusterRole {
 		},
 		{
 			APIGroups: []string{APIGroupGatewayAPI},
-			Resources: []string{"gateways", "httproutes", "grpcroutes", "tcproutes", "tlsroutes", "udproutes", "referencegrants", "backendtlspolicies", "listenersets"},
+			Resources: []string{resourceGateways, "httproutes", "grpcroutes", "tcproutes", "tlsroutes", "udproutes", "referencegrants", "backendtlspolicies", "listenersets"},
 			Verbs:     []string{verbGet, verbList, verbWatch},
 		},
 		{
@@ -660,7 +712,7 @@ func (d *Deployer) netpolControllerClusterRole() *rbacv1.ClusterRole {
 	rules := []rbacv1.PolicyRule{
 		{
 			APIGroups: []string{APIGroupGatewayAPI},
-			Resources: []string{"gateways"},
+			Resources: []string{resourceGateways},
 			Verbs:     []string{verbGet, verbList, verbWatch},
 		},
 		{
@@ -1172,7 +1224,7 @@ func envoyProxyGuard() (*admissionregistrationv1.ValidatingAdmissionPolicy, *adm
 
 	policy := &admissionregistrationv1.ValidatingAdmissionPolicy{
 		APIVersion: admissionregistrationv1.SchemeGroupVersion.String(),
-		Kind:       "ValidatingAdmissionPolicy",
+		Kind:       kindValidatingAdmissionPolicy,
 		Name:       EnvoyProxyGuardPolicyName, Labels: guardLabels,
 		Spec: admissionregistrationv1.ValidatingAdmissionPolicySpec{
 			FailurePolicy: &fail,
@@ -1195,7 +1247,7 @@ func envoyProxyGuard() (*admissionregistrationv1.ValidatingAdmissionPolicy, *adm
 
 	binding := &admissionregistrationv1.ValidatingAdmissionPolicyBinding{
 		APIVersion: admissionregistrationv1.SchemeGroupVersion.String(),
-		Kind:       "ValidatingAdmissionPolicyBinding",
+		Kind:       kindValidatingAdmissionPolicyBinding,
 		Name:       EnvoyProxyGuardPolicyName, Labels: guardLabels,
 		Spec: admissionregistrationv1.ValidatingAdmissionPolicyBindingSpec{
 			PolicyName:        EnvoyProxyGuardPolicyName,
@@ -1230,4 +1282,72 @@ func fieldAbsentExpression(workload, field string) string {
 	}
 
 	return strings.Join(terms, " || ")
+}
+
+// buildGuardResources serializes the Gateway-creation guard (ValidatingAdmissionPolicy
+// and its binding) into the brotli-compressed form a shoot ManagedResource expects.
+func (d *Deployer) buildGuardResources() (map[string][]byte, error) {
+	policy, binding := gatewayCreateGuard()
+	manifest, err := encodeObjects(policy, binding)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode Gateway-creation guard: %w", err)
+	}
+
+	registry := managedresources.NewRegistry(kubernetes.ShootScheme, kubernetes.ShootCodec, kubernetes.ShootSerializer)
+	registry.AddSerialized("block-gateway-creation.yaml", manifest)
+
+	serialized, err := registry.SerializedObjects()
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize Gateway-creation guard manifests: %w", err)
+	}
+
+	return serialized, nil
+}
+
+// gatewayCreateGuard returns the ValidatingAdmissionPolicy and binding that deny
+// CREATE of a Gateway bound to this extension's GatewayClass. Other GatewayClasses
+// are unaffected.
+func gatewayCreateGuard() (*admissionregistrationv1.ValidatingAdmissionPolicy, *admissionregistrationv1.ValidatingAdmissionPolicyBinding) {
+	guardLabels := map[string]string{
+		LabelManagedBy: LabelManagedByValue,
+		LabelName:      DeploymentName,
+	}
+	fail := admissionregistrationv1.Fail
+	forbidden := metav1.StatusReasonForbidden
+
+	policy := &admissionregistrationv1.ValidatingAdmissionPolicy{
+		APIVersion: admissionregistrationv1.SchemeGroupVersion.String(),
+		Kind:       kindValidatingAdmissionPolicy,
+		Name:       GatewayCreateGuardPolicyName, Labels: guardLabels,
+		Spec: admissionregistrationv1.ValidatingAdmissionPolicySpec{
+			FailurePolicy: &fail,
+			MatchConstraints: &admissionregistrationv1.MatchResources{
+				ResourceRules: []admissionregistrationv1.NamedRuleWithOperations{{
+					Operations:  []admissionregistrationv1.OperationType{admissionregistrationv1.Create},
+					APIGroups:   []string{APIGroupGatewayAPI},
+					APIVersions: []string{"*"},
+					Resources:   []string{resourceGateways},
+				}},
+			},
+			Validations: []admissionregistrationv1.Validation{{
+				// Allow unless the Gateway targets our GatewayClass. Guard against a
+				// missing spec/field so a malformed object does not bypass the check.
+				Expression: fmt.Sprintf("!has(object.spec) || !has(object.spec.gatewayClassName) || object.spec.gatewayClassName != %q", GatewayClassName),
+				Reason:     &forbidden,
+				Message:    fmt.Sprintf("Gateways for GatewayClass %q cannot be created while the envoy-gateway extension is being disabled", GatewayClassName),
+			}},
+		},
+	}
+
+	binding := &admissionregistrationv1.ValidatingAdmissionPolicyBinding{
+		APIVersion: admissionregistrationv1.SchemeGroupVersion.String(),
+		Kind:       kindValidatingAdmissionPolicyBinding,
+		Name:       GatewayCreateGuardPolicyName, Labels: guardLabels,
+		Spec: admissionregistrationv1.ValidatingAdmissionPolicyBindingSpec{
+			PolicyName:        GatewayCreateGuardPolicyName,
+			ValidationActions: []admissionregistrationv1.ValidationAction{admissionregistrationv1.Deny},
+		},
+	}
+
+	return policy, binding
 }

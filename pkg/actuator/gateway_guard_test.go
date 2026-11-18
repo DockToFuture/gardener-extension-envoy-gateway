@@ -17,6 +17,9 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	gatewayapiv1 "sigs.k8s.io/gateway-api/apis/v1"
+
+	"github.com/gardener/gardener-extension-envoy-gateway/pkg/envoygateway"
 )
 
 // testSeedNamespace is the seed-side control-plane namespace used across the
@@ -33,6 +36,7 @@ type fakeLister struct {
 	err   error
 
 	clearErr          error
+	clearRemoved      bool
 	clearedNamespaces []string
 
 	deleteErr         error
@@ -40,16 +44,19 @@ type fakeLister struct {
 
 	waitErr        error
 	waitNamespaces []string
+
+	blockedErr        error
+	blockedNamespaces []string
 }
 
 func (f *fakeLister) ListGateways(_ context.Context, _ string) ([]string, error) {
 	return f.names, f.err
 }
 
-func (f *fakeLister) ClearGatewayClassFinalizer(_ context.Context, seedNamespace string) error {
+func (f *fakeLister) ClearGatewayClassFinalizer(_ context.Context, seedNamespace string) (bool, error) {
 	f.clearedNamespaces = append(f.clearedNamespaces, seedNamespace)
 
-	return f.clearErr
+	return f.clearRemoved, f.clearErr
 }
 
 func (f *fakeLister) DeleteGateways(_ context.Context, seedNamespace string) error {
@@ -62,6 +69,12 @@ func (f *fakeLister) WaitUntilGatewaysDeleted(_ context.Context, seedNamespace s
 	f.waitNamespaces = append(f.waitNamespaces, seedNamespace)
 
 	return f.waitErr
+}
+
+func (f *fakeLister) WaitUntilGatewayCreationBlocked(_ context.Context, seedNamespace string) error {
+	f.blockedNamespaces = append(f.blockedNamespaces, seedNamespace)
+
+	return f.blockedErr
 }
 
 func newActuatorForTest(t *testing.T, lister GatewayLister) *Actuator {
@@ -297,5 +310,55 @@ func TestGatewayCRDAbsent(t *testing.T) {
 				t.Errorf("gatewayCRDAbsent(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestFilterManagedGateways_KeepsOnlyOurGatewayClass(t *testing.T) {
+	gw := func(ns, name, class string) gatewayapiv1.Gateway {
+		return gatewayapiv1.Gateway{
+			Namespace: ns, Name: name,
+			Spec: gatewayapiv1.GatewaySpec{GatewayClassName: gatewayapiv1.ObjectName(class)},
+		}
+	}
+
+	in := []gatewayapiv1.Gateway{
+		gw("default", "ours", envoygateway.GatewayClassName),
+		gw("default", "foreign", "some-other-class"),
+		gw("team-a", "ours-2", envoygateway.GatewayClassName),
+		gw("team-a", "empty", ""),
+	}
+
+	got := filterManagedGateways(in)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 managed Gateways, got %d: %v", len(got), got)
+	}
+	for _, g := range got {
+		if string(g.Spec.GatewayClassName) != envoygateway.GatewayClassName {
+			t.Errorf("filter kept a Gateway of class %q", g.Spec.GatewayClassName)
+		}
+	}
+}
+
+func TestDeniedByGuardPolicy_DistinguishesVAPFromRBAC(t *testing.T) {
+	gvr := schema.GroupVersionResource{Group: "gateway.networking.k8s.io", Version: "v1", Resource: "gateways"}
+
+	// A ValidatingAdmissionPolicy denial names the policy in its message.
+	vapDenial := apierrors.NewForbidden(gvr.GroupResource(), "probe",
+		errors.New("ValidatingAdmissionPolicy '"+envoygateway.GatewayCreateGuardPolicyName+"' denied request"))
+	// An RBAC authorization failure is also Forbidden, but does not name our policy.
+	rbacDenial := apierrors.NewForbidden(gvr.GroupResource(), "probe",
+		errors.New(`User "system:serviceaccount:x:y" cannot create resource "gateways"`))
+
+	if !deniedByGuardPolicy(vapDenial) {
+		t.Errorf("expected a VAP denial naming %q to count as enforcing", envoygateway.GatewayCreateGuardPolicyName)
+	}
+	if deniedByGuardPolicy(rbacDenial) {
+		t.Error("an RBAC authorization Forbidden must NOT be treated as the guard enforcing")
+	}
+	if deniedByGuardPolicy(nil) {
+		t.Error("a nil error (create admitted) must not count as enforcing")
+	}
+	if deniedByGuardPolicy(apierrors.NewNotFound(gvr.GroupResource(), "probe")) {
+		t.Error("a non-Forbidden error must not count as enforcing")
 	}
 }

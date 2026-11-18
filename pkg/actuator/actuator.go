@@ -287,6 +287,12 @@ func (a *Actuator) Reconcile(ctx context.Context, logger logr.Logger, ex *extens
 		return fmt.Errorf("failed to deploy envoy-gateway: %w", err)
 	}
 
+	// Remove a guard left behind by an aborted disable before re-enabling.
+	// Best-effort, like the orphan sweep below.
+	if err := deployer.DeleteGuard(ctx, clusterName); err != nil {
+		logger.Error(err, "failed to remove a leftover Gateway-creation guard; continuing", "cluster", clusterName)
+	}
+
 	// One-time migration cleanup: delete the per-Gateway data-plane proxy
 	// resources the pre-GatewayNamespace deploy mode orphaned in kube-system (a
 	// leftover LoadBalancer Service keeps a cloud LB billing). Best-effort: it
@@ -389,8 +395,45 @@ func (a *Actuator) Delete(ctx context.Context, logger logr.Logger, ex *extension
 		return fmt.Errorf("failed to get cluster: %w", err)
 	}
 
+	deployer := envoygateway.NewDeployer(a.client, logger, envoygateway.DefaultConfig(), a.imageVector)
+
+	// Extension-disable on a live shoot: install a guard that blocks creating
+	// Gateways for our GatewayClass before tearing down, closing the race where a
+	// Gateway created mid-teardown re-pins the GatewayClass finalizer and orphans
+	// its load balancer. Shoot deletion uses drainUserGatewaysForShootDeletion.
+	disablingLiveShoot := cluster.Shoot != nil && cluster.Shoot.DeletionTimestamp == nil
+	if disablingLiveShoot {
+		if err := deployer.DeployGuard(ctx, clusterName); err != nil {
+			return fmt.Errorf("failed to install Gateway-creation guard: %w", err)
+		}
+
+		// Confirm the policy actually rejects a create before tearing down: it is
+		// not enforced the instant its objects exist.
+		probeCtx, cancel := context.WithTimeout(ctx, envoygateway.GatewayGuardEnforcementTimeout)
+		if err := a.gatewayLister.WaitUntilGatewayCreationBlocked(probeCtx, clusterName); err != nil {
+			cancel()
+
+			return fmt.Errorf("gateway-creation guard did not take effect: %w", err)
+		}
+		cancel()
+	}
+
 	if err := a.checkNoUserGateways(ctx, logger, cluster.Shoot, clusterName); err != nil {
 		return err
+	}
+
+	// No user Gateway of our class remains, so any gateway-exists finalizer left
+	// on the GatewayClass is stray (its owning Gateway is already gone) and would
+	// otherwise silently block ManagedResource teardown. Removing it here is safe
+	// precisely because there is no owning Gateway to protect. Report it so a
+	// recurring stray finalizer is visible rather than hidden. On shoot deletion
+	// the drain path clears it instead; best-effort, so a failure only logs.
+	if disablingLiveShoot {
+		if removed, err := a.gatewayLister.ClearGatewayClassFinalizer(ctx, clusterName); err != nil {
+			logger.Error(err, "failed to check/clear a stray GatewayClass finalizer; continuing", "cluster", clusterName)
+		} else if removed {
+			logger.Info("removed a stray gateway-exists finalizer from the GatewayClass (no user Gateway owned it)", "cluster", clusterName)
+		}
 	}
 
 	// Tear down the per-shoot NetworkPolicy controller (Deployment +
@@ -407,15 +450,24 @@ func (a *Actuator) Delete(ctx context.Context, logger logr.Logger, ex *extension
 	// Prune the data-plane NetworkPolicies only while the shoot is still alive:
 	// when the shoot is being deleted its cluster is going away anyway, so there
 	// is nothing to clean up.
-	if cluster.Shoot != nil && cluster.Shoot.DeletionTimestamp == nil {
+	if disablingLiveShoot {
 		if err := a.netpolReconciler.Reconcile(ctx, clusterName); err != nil {
 			return fmt.Errorf("failed to remove data-plane NetworkPolicies: %w", err)
 		}
 	}
 
-	deployer := envoygateway.NewDeployer(a.client, logger, envoygateway.DefaultConfig(), a.imageVector)
 	if err := deployer.Delete(ctx, clusterName); err != nil {
+		// Teardown blocked (e.g. the GatewayClass finalizer). The guard keeps new
+		// Gateways out, so returning the error requeues and converges; the guard
+		// stays until teardown succeeds (removed below).
 		return fmt.Errorf("failed to delete envoy-gateway: %w", err)
+	}
+
+	// Teardown succeeded: remove the guard (idempotent; no-op if not installed).
+	if disablingLiveShoot {
+		if err := deployer.DeleteGuard(ctx, clusterName); err != nil {
+			return fmt.Errorf("failed to remove Gateway-creation guard after disabling envoy-gateway: %w", err)
+		}
 	}
 
 	if err := a.deleteSecrets(ctx, logger, cluster); err != nil {
@@ -508,7 +560,7 @@ func (a *Actuator) drainUserGatewaysForShootDeletion(ctx context.Context, logger
 		logger.Info("user Gateways drained from shoot", "cluster", clusterName)
 	}
 
-	if err := a.gatewayLister.ClearGatewayClassFinalizer(ctx, clusterName); err != nil {
+	if _, err := a.gatewayLister.ClearGatewayClassFinalizer(ctx, clusterName); err != nil {
 		logger.Error(err, "failed to clear GatewayClass finalizer during shoot deletion; continuing", "cluster", clusterName)
 	} else {
 		logger.Info("cleared GatewayClass finalizer, envoy-gateway can be removed", "cluster", clusterName)

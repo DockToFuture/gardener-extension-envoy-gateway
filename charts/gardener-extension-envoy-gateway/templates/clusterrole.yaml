@@ -54,7 +54,8 @@ rules:
 
 # Permissions required for deploying Envoy Gateway via ManagedResources.
 # create cannot be name-scoped in RBAC; mutating verbs are limited to this
-# extension's own ManagedResource.
+# extension's own ManagedResources (the main resource and the short-lived
+# Gateway-creation guard installed during disable).
 - apiGroups:
   - resources.gardener.cloud
   resources:
@@ -70,6 +71,7 @@ rules:
   - managedresources
   resourceNames:
   - extension-envoy-gateway
+  - extension-envoy-gateway-guard
   verbs:
   - update
   - patch

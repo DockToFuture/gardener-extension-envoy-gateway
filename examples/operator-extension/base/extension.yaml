@@ -8,15 +8,15 @@ spec:
       runtimeCluster:
         helm:
           ociRepository:
-            ref: europe-docker.pkg.dev/gardener-project/public/charts/gardener/extensions/admission-envoy-gateway-runtime:latest
+            ref: europe-docker.pkg.dev/gardener-project/public/charts/gardener/extensions/admission-envoy-gateway-runtime:v0.2.0
       virtualCluster:
         helm:
           ociRepository:
-            ref: europe-docker.pkg.dev/gardener-project/public/charts/gardener/extensions/admission-envoy-gateway-application:latest
+            ref: europe-docker.pkg.dev/gardener-project/public/charts/gardener/extensions/admission-envoy-gateway-application:v0.2.0
     extension:
       helm:
         ociRepository:
-          ref: europe-docker.pkg.dev/gardener-project/public/gardener/extensions/gardener-extension-envoy-gateway:latest
+          ref: europe-docker.pkg.dev/gardener-project/public/gardener/extensions/gardener-extension-envoy-gateway:v0.2.0
   resources:
   - kind: Extension
     type: envoy-gateway
