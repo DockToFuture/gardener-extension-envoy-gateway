@@ -5,7 +5,7 @@ metadata:
   name: gardener-extension-envoy-gateway
 helm:
   ociRepository:
-    ref: registry.local.gardener.cloud:5001/helm-charts/gardener-extension-envoy-gateway:v0.3.0-dev
+    ref: registry.local.gardener.cloud:5001/helm-charts/gardener-extension-envoy-gateway:v0.3.0
   values:
     webhook:
       enabled: true
