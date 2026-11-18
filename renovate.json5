@@ -1,9 +1,11 @@
 {
   $schema: 'https://docs.renovatebot.com/renovate-schema.json',
-  dependencyDashboard: true,
+  dependencyDashboard: {
+    enabled: true,
+  },
   extends: [
     'config:recommended',
-    "github>gardener/ci-infra//config/renovate/automerge-with-tide.json5"
+    'github>gardener/ci-infra//config/renovate/automerge-with-tide.json5',
   ],
   labels: [
     'kind/enhancement',
@@ -11,11 +13,7 @@
   postUpdateOptions: [
     'gomodTidy',
   ],
-  // Pin and maintain image/action digests so build inputs cannot be swapped under a mutable tag.
-  "pinDigests": true,
-  // Ignore the commits pushed by the `renovate-post-upgrade` GitHub Action (running
-  // `make generate`/`make tidy`) when detecting whether a branch was manually edited.
-  // Otherwise, Renovate would treat the branch as modified and stop updating the PR.
+  pinDigests: true,
   gitIgnoredAuthors: [
     '41898282+github-actions[bot]@users.noreply.github.com',
   ],
@@ -42,32 +40,49 @@
       matchPackageNames: [
         '/golang/',
       ],
-      "matchUpdateTypes": ["patch", "digest"],
-      "automerge": true
+      matchUpdateTypes: [
+        'patch',
+        'digest',
+      ],
+      automerge: true,
     },
     {
-      // Group gardener updates in one PR.
-      groupName: "gardener",
-      matchManagers: ["gomod"],
+      groupName: 'gardener',
+      matchManagers: [
+        'gomod',
+      ],
       matchPackageNames: [
         '/^github\\.com/gardener/',
       ],
-      "matchUpdateTypes": ["patch", "digest"],
-      "automerge": true
-    },
-    {
-      "matchManagers": ["gomod"],
-      "matchUpdateTypes": ["patch", "digest"],
-      "automerge": true
-    },
-    {
-      "matchManagers": ["github-actions"],
-      "matchPackagePatterns": [
-        "^actions/checkout$",
-        "^actions/setup-go$",
+      matchUpdateTypes: [
+        'patch',
+        'digest',
       ],
-      "matchUpdateTypes": ["patch", "digest"],
-      "automerge": true
+      automerge: true,
+    },
+    {
+      matchManagers: [
+        'gomod',
+      ],
+      matchUpdateTypes: [
+        'patch',
+        'digest',
+      ],
+      automerge: true,
+    },
+    {
+      matchManagers: [
+        'github-actions',
+      ],
+      matchUpdateTypes: [
+        'patch',
+        'digest',
+      ],
+      automerge: true,
+      matchPackageNames: [
+        '/^actions/checkout$/',
+        '/^actions/setup-go$/',
+      ],
     },
     {
       matchFileNames: [
